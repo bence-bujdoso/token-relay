@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-09-19T20:01:34.817292",
+  "total_tests": 1210,
+  "passed": 1197,
+  "failed": 0,
+  "errors": 11,
+  "skipped": 2,
+  "duration_seconds": 64.47,
+  "coverage_estimate_pct": 95,
+  "success": false
+}

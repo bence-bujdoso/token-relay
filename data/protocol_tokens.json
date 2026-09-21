@@ -1,0 +1,175 @@
+{
+  "42": {
+    "protocol_type": "status",
+    "routing_priority": 1,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "result": {"type": "string"},
+        "summary": {"type": "string"}
+      },
+      "required": ["result"]
+    }
+  },
+  "0": {
+    "protocol_type": "error",
+    "routing_priority": 0,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "error_code": {"type": "string"},
+        "message": {"type": "string"},
+        "details": {"type": "string"}
+      },
+      "required": ["error_code", "message"]
+    }
+  },
+  "1": {
+    "protocol_type": "data",
+    "routing_priority": 50,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "value": {"type": "string"},
+        "unit": {"type": "string"}
+      }
+    }
+  },
+  "2": {
+    "protocol_type": "data",
+    "routing_priority": 50,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "pair": {"type": "array", "items": {"type": "string"}},
+        "relationship": {"type": "string"}
+      }
+    }
+  },
+  "3": {
+    "protocol_type": "data",
+    "routing_priority": 50,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "triad": {"type": "array", "items": {"type": "string"}},
+        "structure": {"type": "string"}
+      }
+    }
+  },
+  "100": {
+    "protocol_type": "data",
+    "routing_priority": 60,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string"},
+        "description": {"type": "string"}
+      }
+    }
+  },
+  "101": {
+    "protocol_type": "control",
+    "routing_priority": 10,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "connector": {"type": "string"},
+        "bridge_to": {"type": "integer"}
+      }
+    }
+  },
+  "102": {
+    "protocol_type": "data",
+    "routing_priority": 60,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {"type": "array", "items": {"type": "integer"}},
+        "timestamp": {"type": "integer"}
+      }
+    }
+  },
+  "103": {
+    "protocol_type": "data",
+    "routing_priority": 60,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "location": {"type": "string"},
+        "direction": {"type": "string"}
+      }
+    }
+  },
+  "104": {
+    "protocol_type": "control",
+    "routing_priority": 10,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "cause": {"type": "string"},
+        "effect": {"type": "string"},
+        "depends_on": {"type": "array", "items": {"type": "integer"}}
+      }
+    }
+  },
+  "150": {
+    "protocol_type": "boundary",
+    "routing_priority": 0,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "message_id": {"type": "string"},
+        "direction": {"type": "string", "enum": ["request", "response"]}
+      },
+      "required": ["message_id", "direction"]
+    }
+  },
+  "151": {
+    "protocol_type": "control",
+    "routing_priority": 1,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "attention_level": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "focus": {"type": "string"}
+      },
+      "required": ["attention_level"]
+    }
+  },
+  "152": {
+    "protocol_type": "control",
+    "routing_priority": 100,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "padding_count": {"type": "integer"},
+        "reserved": {"type": "boolean"}
+      }
+    }
+  },
+  "153": {
+    "protocol_type": "boundary",
+    "routing_priority": 0,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "separator_type": {"type": "string", "enum": ["sentence", "concept", "task", "phase"]},
+        "next_topic": {"type": "string"}
+      },
+      "required": ["separator_type"]
+    }
+  },
+  "154": {
+    "protocol_type": "control",
+    "routing_priority": 0,
+    "payload_schema": {
+      "type": "object",
+      "properties": {
+        "instruction": {"type": "string"},
+        "config": {"type": "object"}
+      },
+      "required": ["instruction"]
+    }
+  }
+}

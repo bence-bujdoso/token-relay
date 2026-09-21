@@ -1,0 +1,5 @@
+# TokenRelay v4 — All dependencies use Python Standard Library
+# No external packages required. Server runs with Python 3.10+ only.
+
+# Optional: for running tests with pytest
+pytest>=7.0
