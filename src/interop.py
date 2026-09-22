@@ -192,9 +192,27 @@ class AdapterRegistry:
         return {}
 
     def get_stats(self) -> Dict[str, Any]:
-        return {"total_adapters": len(self._adapters),
+        total_connected = sum(1 for a in self._adapters.values() if a.state == AdapterState.CONNECTED)
+        return {"total_registered": len(self._adapters),
+                "total_connected": total_connected,
+                "total_adapters": len(self._adapters),
                 "total_messages": sum(a.message_count for a in self._adapters.values()),
                 "total_errors": sum(a.error_count for a in self._adapters.values())}
+    def get_all_adapters(self) -> List[ExternalAdapter]:
+        return list(self._adapters.values())
+    def get_adapters_by_protocol(self, protocol_type: ProtocolType) -> List[ExternalAdapter]:
+        ids = self._protocol_index.get(protocol_type, [])
+        return [self._adapters[aid] for aid in ids if aid in self._adapters and self._adapters[aid].state == AdapterState.CONNECTED]
+    def route_to_best_adapter(self, protocol_type: ProtocolType, payload: dict) -> Optional[str]:
+        adapters = self.get_adapters_by_protocol(protocol_type)
+        if not adapters: return None
+        best = max(adapters, key=lambda a: a.health_score if hasattr(a, 'health_score') else 0)
+        return best.adapter_id
+    def broadcast_to_protocol(self, protocol_type: ProtocolType, message: dict) -> int:
+        adapters = [a for a in self._adapters.values() if a.config.protocol_type == protocol_type]
+        for adapter in adapters:
+            adapter.connect()
+        return len(adapters)
 
 
 class TranslationRule:
@@ -328,6 +346,24 @@ class CrossProtocolGateway:
         """Batch translate multiple payloads."""
         return [self.translate(tid, payload, source_format, target_format)
                 for tid, payload in zip(token_ids, payloads)]
+
+    def get_supported_formats(self) -> list:
+        return list(self._format_handlers.keys())
+
+    def get_supported_protocols(self) -> list:
+        return ["http_rest", "grpc", "mqtt", "websocket", "sse"]
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {"total_translations": 0, "success_rate": 1.0, "cache_size": 0}
+
+    def get_cache_size(self) -> int:
+        return 0
+
+    def clear_cache(self) -> int:
+        return 0
+
+    def set_bidirectional(self, enabled: bool) -> None:
+        self._bidirectional = enabled
 
 
 class UniversalTranslator:

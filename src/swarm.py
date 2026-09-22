@@ -106,7 +106,7 @@ class SwarmAgent:
     def complete_task(self,task_id,result):
         tid = str(task_id) if not isinstance(task_id,str) else task_id
         for t in self.task_queue:
-            if getattr(t,"task_id",None)==tid: self.record_result(True,0.0); return True
+            if getattr(t,"task_id",None)==tid: self.record_result(True,0.0); self.task_queue.remove(t); return True
         return False
     def fail_task(self,task_id,error=""):
         tid = str(task_id) if not isinstance(task_id,str) else task_id
@@ -129,8 +129,24 @@ class SwarmCoordinator:
         agent_id=str(uuid.uuid4())[:8]; agent=SwarmAgent(role=agent_or_role,agent_id=agent_id)
         if capabilities: agent.capability_vector.capabilities=capabilities
         self.agents[agent_id]=agent; return agent
-    def deregister_agent(self,agent_id): return self.agents.pop(agent_id,None) is not None
-    def get_agent(self, agent_id): return self.agents.get(agent_id)
+    def deregister_agent(self,agent_id): 
+        if agent_id not in self.agents: return False
+        self.agents.pop(agent_id,None)
+        return True
+    def unregister_agent(self, agent_id):
+        """Alias for deregister_agent - also redistributes tasks."""
+        agent = self.agents.get(agent_id)
+        if agent:
+            for t in self.task_registry.values():
+                if t.assigned_agent == agent_id:
+                    t.status = "pending"
+                    t.assigned_agent = None
+        return self.agents.pop(agent_id, None) is not None
+    def get_agent(self, agent_id):
+        agent = self.agents.get(agent_id)
+        if agent is None:
+            raise AgentNotFoundError(f"Agent {agent_id} not found")
+        return agent
     def load_balance(self, strategy=None):
         if not strategy: strategy = self.config.load_balance_strategy
         assignments = {}
@@ -152,7 +168,7 @@ class SwarmCoordinator:
     def get_status(self):
         return AgentState.ACTIVE if self.agents else AgentState.OFFLINE
     def get_metrics(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry)}
-    def discover_agents(self): return [a for a in self.agents.values()]
+    def discover_agents(self): return [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values()]
     def submit_task(self,description,priority=TaskPriority.NORMAL,required_capabilities=None,decompose=False):
         task=SwarmTask(description=description,priority=priority,required_capabilities=required_capabilities or {})
         tid=str(task.task_id) if not isinstance(task.task_id,str) else task.task_id
