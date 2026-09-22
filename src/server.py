@@ -512,7 +512,6 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Clean up POS objects
         del pos_system, predictor
-        gc.collect()
 
         # Run the full V3 pipeline
         pipeline_info = self._relay_pipeline(prompt)
@@ -566,7 +565,6 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Clean up
         del prediction, pipeline_info, body
-        gc.collect()
 
     def _handle_swarm_benchmark(self):
         """Run benchmark with direct LLM comparison (swarm agents removed)."""
@@ -697,7 +695,6 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             # Memory enforcement after every POST request
             self._app._check_memory()
-            gc.collect()
 
     def log_message(self, format, *args): pass
 

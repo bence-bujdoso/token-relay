@@ -32,6 +32,8 @@ class ProtocolType(Enum):
 class AdapterState(Enum):
     REGISTERED = "registered"
     CONNECTED = "connected"
+    ACTIVE = "active"
+    PAUSED = "paused"
     DISCONNECTED = "disconnected"
     ERROR = "error"
 
@@ -336,6 +338,17 @@ class UniversalTranslator:
         self._car_router = car_router or CARRouter()
         self._brp_server = brp_server
         self._rules: List[TranslationRule] = []
+        # Add default translation rules
+        self._rules.append(TranslationRule(
+            source_format=TranslationFormat.JSON,
+            target_format=TranslationFormat.YAML,
+            priority=5,
+        ))
+        self._rules.append(TranslationRule(
+            source_format=TranslationFormat.PROTOBUF,
+            target_format=TranslationFormat.JSON,
+            priority=5,
+        ))
         self._format_handlers = {
             "json": lambda p: dict(p),
             "protobuf": lambda p: dict(p),
