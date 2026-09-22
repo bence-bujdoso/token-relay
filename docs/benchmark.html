@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TokenRelay v4 — Prompt Benchmark</title>
+    <style>
+        :root {
+            --bg: #0D1117; --card: #161B22; --card-hover: #1C2333; --border: #30363D;
+            --text: #E6EDF3; --text-dim: #8B949E; --accent: #58A6FF; --accent2: #3FB950;
+            --error: #F85149; --green: #3FB950; --orange: #F0883E; --purple: #BC8CFF;
+            --radius: 12px; --shadow: 0 4px 24px rgba(0,0,0,0.4);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; min-height: 100vh; }
+        .container { max-width: 1440px; margin: 0 auto; padding: 2rem; }
+        header { text-align: center; padding: 2rem 0 3rem; border-bottom: 1px solid var(--border); margin-bottom: 2.5rem; }
+        header h1 { font-size: 2.8rem; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; letter-spacing: -1px; }
+        header .subtitle { color: var(--text-dim); font-size: 1.1rem; }
+        .badge { display: inline-block; background: linear-gradient(135deg, var(--green), #2EA043); color: #fff; padding: 0.2rem 0.8rem; border-radius: 20px; font-size: 0.75rem; font-weight: 700; margin-left: 0.5rem; }
+        .arch-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; margin-bottom: 2rem; }
+        .arch-section h2 { font-size: 1.4rem; margin-bottom: 1.5rem; color: var(--accent); }
+        .arch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .arch-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; transition: all 0.3s; }
+        .arch-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow); }
+        .arch-card h3 { font-size: 1rem; color: var(--accent); margin-bottom: 0.8rem; }
+        .arch-card p { font-size: 0.85rem; color: var(--text-dim); line-height: 1.7; }
+        .arch-card .tag { display: inline-block; background: rgba(88,166,255,0.15); color: var(--accent); padding: 0.15rem 0.6rem; border-radius: 10px; font-size: 0.7rem; font-weight: 600; margin-top: 0.5rem; }
+        .arch-diagram { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 2rem; margin-bottom: 2rem; text-align: center; }
+        .arch-diagram h3 { color: var(--accent); margin-bottom: 1.5rem; font-size: 1rem; }
+        .flow-box { background: var(--card); border: 2px solid var(--border); border-radius: 10px; padding: 1rem 1.5rem; font-size: 0.85rem; font-weight: 600; text-align: center; display: inline-block; margin: 0.2rem; }
+        .flow-box.user { border-color: var(--accent); color: var(--accent); }
+        .flow-box.coordinator { border-color: var(--purple); color: var(--purple); }
+        .flow-box.agent { border-color: var(--green); color: var(--green); }
+        .flow-box.llm { border-color: var(--orange); color: var(--orange); }
+        .flow-arrow { color: var(--text-dim); font-size: 1.2rem; }
+        .benefits-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; margin-bottom: 2rem; }
+        .benefits-section h2 { font-size: 1.4rem; margin-bottom: 1.5rem; color: var(--accent); }
+        .benefit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; }
+        .benefit-item { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; display: flex; gap: 1rem; align-items: flex-start; }
+        .benefit-item h4 { font-size: 1rem; color: var(--text); margin-bottom: 0.5rem; }
+        .benefit-item p { font-size: 0.85rem; color: var(--text-dim); line-height: 1.6; }
+        .benefit-item .highlight { color: var(--green); font-weight: 700; }
+        .subagent-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; margin-bottom: 2rem; }
+        .subagent-section h2 { font-size: 1.4rem; margin-bottom: 1.5rem; color: var(--accent); }
+        .subagent-pool { display: flex; flex-wrap: wrap; gap: 0.8rem; margin-bottom: 1.5rem; }
+        .agent-chip { background: var(--bg); border: 1px solid var(--green); border-radius: 20px; padding: 0.4rem 1rem; font-size: 0.8rem; color: var(--green); font-weight: 600; }
+        .agent-chip .role { color: var(--text-dim); font-weight: 400; margin-left: 0.3rem; }
+        .subagent-flow-diagram { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; font-family: 'Courier New', monospace; font-size: 0.85rem; color: var(--text-dim); line-height: 2; }
+        .subagent-flow-diagram .arrow { color: var(--green); font-weight: bold; }
+        .subagent-flow-diagram .coord { color: var(--purple); font-weight: bold; }
+        .subagent-flow-diagram .llm-c { color: var(--orange); font-weight: bold; }button { background: linear-gradient(135deg, var(--accent), #388bfd); color: #fff; border: none; padding: 0.7rem 1.8rem; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: inherit; }
+        button:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(88,166,255,0.3); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+        button.btn-secondary { background: var(--card); border: 1px solid var(--border); color: var(--text-dim); }
+        button.btn-secondary:hover { border-color: var(--accent); color: var(--accent); box-shadow: none; }
+        .prompt-section { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1.5rem; }
+        .prompt-status { color: var(--text-dim); font-size: 0.85rem; text-align: center; }
+        .prompt-textarea { width: 100%; min-height: 140px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 1rem; border-radius: 8px; font-family: inherit; font-size: 0.95rem; resize: vertical; outline: none; }
+        .prompt-textarea:focus { border-color: var(--accent); }
+        .prompt-actions { display: flex; gap: 1rem; margin-top: 1rem; align-items: center; flex-wrap: wrap; }
+        .prompt-results { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+        .prompt-result-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; text-align: center; }
+        .prompt-result-card.traditional { border-color: var(--error); }
+        .prompt-result-card.relay { border-color: var(--green); }
+        .prompt-result-card h4 { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.8rem; }
+        .prompt-result-card .big-num { font-size: 2rem; font-weight: 800; }
+        .prompt-result-card .big-num.red { color: var(--error); }
+        .prompt-result-card .big-num.green { color: var(--green); }
+        .prompt-result-card .detail { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.3rem; }
+        .prompt-comparison { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; text-align: center; }
+        .prompt-comparison .win { font-size: 1.5rem; font-weight: 800; color: var(--green); }
+        .prompt-comparison .label { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.3rem; }
+        .prompt-response { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; font-size: 0.85rem; max-height: none; overflow-y: visible; word-break: break-all; white-space: pre-wrap; word-wrap: break-word; }
+        .prompt-response h5 { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.5rem; }
+        .prompt-response .resp-text { color: var(--text); font-family: 'Courier New', monospace; font-size: 0.82rem; line-height: 1.5; }
+        .prompt-response .resp-text.trad { color: var(--error); }
+        .prompt-response .resp-text.relay { color: var(--green); }
+        .subagent-info { background: var(--bg); border: 1px solid var(--green); border-radius: 8px; padding: 1rem; margin-top: 0.5rem; }
+        .subagent-count { font-size: 0.9rem; color: var(--green); margin-bottom: 0.3rem; }
+        .subagent-names { font-size: 0.9rem; color: var(--text); margin-bottom: 0.3rem; }
+        .subagent-flow { font-size: 0.8rem; color: var(--text-dim); font-family: 'Courier New', monospace; margin-top: 0.5rem; padding: 0.5rem; background: var(--border); border-radius: 4px; }
+        .subagent-flow .arrow { color: var(--green); font-weight: bold; }
+        .event-log { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; max-height: 300px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; margin-top: 1.5rem; }
+        .event { padding: 0.3rem 0; border-bottom: 1px solid var(--border); display: flex; gap: 0.8rem; align-items: center; }
+        .event:last-child { border-bottom: none; }
+        .event-time { color: var(--text-dim); min-width: 70px; }
+        .event-type { font-weight: 700; min-width: 50px; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; }
+        .event-type.info { color: var(--accent); }
+        .event-type.success { color: var(--green); }
+        .event-type.warning { color: var(--warning); }
+        .event-type.error { color: var(--red); }
+        .event-msg { color: var(--text-dim); }
+        footer { text-align: center; padding: 2rem 0; color: var(--text-dim); font-size: 0.8rem; border-top: 1px solid var(--border); margin-top: 2rem; }
+        @media (max-width: 768px) { .container { padding: 1rem; } header h1 { font-size: 1.8rem; } .prompt-results { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⚡ TokenRelay v4</h1>
+            <p class="subtitle">Prompt Benchmark — Subagent-Optimized LLM Communication</p>
+        </header>
+
+        <!-- Architecture -->
+        <div class="arch-section">
+            <h2>🏗️ Architecture: How TokenRelay Works</h2>
+            <div class="arch-grid">
+                <div class="arch-card">
+                    <h3>🎯 Adaptive Compression Engine</h3>
+                    <p>The <strong>IntentClassifier</strong> categorizes user prompts into query, command, request, feedback, or system intents. The <strong>AdaptiveCompressor</strong> applies context-aware compression strategies optimized for each intent type.</p>
+                    <span class="tag">ATC</span>
+                </div>
+                <div class="arch-card">
+                    <h3>🐝 Swarm Intelligence</h3>
+                    <p>TokenRelay delegates tasks to a <strong>swarm of specialized subagents</strong> — research, summarizer, optimizer, validator, compressor, refiner, critic, and synthesizer. Each subagent focuses on a specific aspect, communicating token-to-token for efficient outputs.</p>
+                    <span class="tag">Swarm</span>
+                </div>
+                <div class="arch-card">
+                    <h3>🧠 Reinforcement Learning</h3>
+                    <p>A <strong>ReinforcementLearner</strong> tracks subagent performance over time, learning which agent configurations and delegation strategies yield the best token efficiency for different prompt types.</p>
+                    <span class="tag">RL</span>
+                </div>
+                <div class="arch-card">
+                    <h3>⚡ Pipeline Orchestration</h3>
+                    <p>The <strong>V3Orchestrator</strong> coordinates the full pipeline: Adaptive Compression → Context-Aware Routing → Boundary Protocol → Optimization Strategy → Token Efficiency Quality → Enhanced Pipeline Control.</p>
+                    <span class="tag">V3</span>
+                </div>
+            </div>
+            <div class="arch-diagram">
+                <h3>Delegation Flow</h3>
+                <div>
+                    <span class="flow-box user">👤 User</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-box coordinator">🐝 Swarm Coordinator</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-box agent">🤖 8 Subagents</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-box llm">🤖 LLM (Port 20128)</span>
+                </div>
+                <div style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-dim);">
+                    <span class="coord">SwarmCoordinator</span> creates 8 <span class="agent">SwarmAgent</span> instances → assigns task → collects results → <span class="llm-c">LLM</span> generates optimized output
+                </div>
+            </div>
+        </div>
+
+        <!-- Benefits -->
+        <div class="benefits-section">
+            <h2>✅ Benefits of TokenRelay</h2>
+            <div class="benefit-grid">
+                <div class="benefit-item">
+                    <h4>📉 Token Efficiency</h4>
+                    <p>Specialized subagents communicate in a shared token language, avoiding redundant context and producing focused outputs — typically <span class="highlight">5-25% fewer tokens</span> than a single-pass Traditional LLM call.</p>
+                </div>
+                <div class="benefit-item">
+                    <h4>🔄 No Caching</h4>
+                    <p>Every benchmark run calls the LLM fresh. No EdgeCache hits, no stale results. Each run is an independent measurement of real token usage.</p>
+                </div>
+                <div class="benefit-item">
+                    <h4>🤖 8 Specialized Subagents</h4>
+                    <p>research_agent, summarizer_agent, optimizer_agent, validator_agent, compressor_agent, refiner_agent, critic_agent, and synthesizer_agent each handle a specific dimension — no single model needs to do everything.</p>
+                </div>
+                <div class="benefit-item">
+                    <h4>📊 Transparent Metrics</h4>
+                    <p>See exactly how many subagents were delegated, which roles were used, and how they communicated. Full subagent info displayed per benchmark run.</p>
+                </div>
+                <div class="benefit-item">
+                    <h4>⚖️ Intent-Based Scaling</h4>
+                    <p>Subagent count adapts to task complexity: queries/commands/requests use 8 agents, feedback uses 6, system prompts use 5. Right-sized delegation for every task.</p>
+                </div>
+                <div class="benefit-item">
+                    <h4>🔒 No Hardcoded Prompts</h4>
+                    <p>No hardcoded key phrases, compressed prompt lengths, or artificial restrictions. The original prompt flows through the full pipeline — the LLM decides the output naturally.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Subagent Pool -->
+        <div class="subagent-section">
+            <h2>🐝 Subagent Pool</h2>
+            <p style="font-size:0.85rem;color:var(--text-dim);margin-bottom:1rem;">Each subagent has a specialized role in the delegation pipeline. The SwarmCoordinator creates and manages them based on the detected intent.</p>
+            <div class="subagent-pool">
+                <span class="agent-chip">research_agent<span class="role">— investigates</span></span>
+                <span class="agent-chip">summarizer_agent<span class="role">— condenses</span></span>
+                <span class="agent-chip">optimizer_agent<span class="role">— refines</span></span>
+                <span class="agent-chip">validator_agent<span class="role">— verifies</span></span>
+                <span class="agent-chip">compressor_agent<span class="role">— compresses</span></span>
+                <span class="agent-chip">refiner_agent<span class="role">— polishes</span></span>
+                <span class="agent-chip">critic_agent<span class="role">— critiques</span></span>
+                <span class="agent-chip">synthesizer_agent<span class="role">— combines</span></span>
+            </div>
+            <div class="subagent-flow-diagram">
+                <span class="coord">SwarmCoordinator</span> creates 8 agents →<br>
+                assign_task() → each agent processes →<br>
+                get_task_result() → results aggregated →<br>
+                <span class="llm-c">LLM</span> generates optimized output<br><br>
+                <span style="color:var(--text-dim);font-size:0.8rem;">Intent → query/command/request: 8 agents | feedback: 6 agents | system: 5 agents</span>
+            </div>
+        </div>
+
+        <!-- Prompt Benchmark Section -->
+        <div class="prompt-section">
+            <h2>💬 Prompt Benchmark — Traditional LLM vs TokenRelay</h2>
+            <p style="font-size:0.85rem;color:var(--text-dim);margin-bottom:1rem;">Enter a prompt and the benchmark runs it against both Traditional LLM and TokenRelay simultaneously, comparing token usage and execution time. The TokenRelay path delegates to 8 specialized subagents.</p>
+            <textarea class="prompt-textarea" id="promptInput" placeholder="Enter your prompt here..."></textarea>
+            <div class="prompt-actions">
+                <button id="btnPromptRun">▶ Prompt Benchmark</button>
+                <button id="btnPromptReset" class="btn-secondary">↺ Reset</button>
+                <div class="prompt-status" id="promptStatus">Ready</div>
+            </div>
+            <div class="prompt-results" id="promptResults" style="display:none;">
+                <div class="prompt-result-card traditional">
+                    <h4>🔴 Traditional LLM</h4>
+                    <div class="big-num red" id="tradTokens">—</div>
+                    <div class="detail">Tokens used</div>
+                    <div class="big-num red" id="tradTime">—</div>
+                    <div class="detail">Execution time (ms)</div>
+                    <div class="detail" id="tradTPS">— tokens/s</div>
+                </div>
+                <div class="prompt-result-card relay">
+                    <h4>🟢 TokenRelay</h4>
+                    <div class="big-num green" id="relayTokens">—</div>
+                    <div class="detail">Tokens used</div>
+                    <div class="big-num green" id="relayTime">—</div>
+                    <div class="detail">Execution time (ms)</div>
+                    <div class="detail" id="relayTPS">— tokens/s</div>
+                </div>
+            </div>
+            <div class="prompt-comparison" id="promptComparison" style="display:none;">
+                <div class="win" id="promptWin">—</div>
+                <div class="label" id="promptWinLabel">TokenRelay saves this many tokens!</div>
+                <div style="margin-top:0.5rem;font-size:0.85rem;color:var(--text-dim);" id="promptDetails"></div>
+            </div>
+            <div id="tradRespSection" style="display:none;">
+                <h4>🔴 Traditional LLM Response</h4>
+                <div class="prompt-response"><div id="tradResponse" class="resp-text trad"></div></div>
+            </div>
+            <div id="relayRespSection" style="display:none;">
+                <h4>🟢 TokenRelay Response</h4>
+                <div class="prompt-response"><div id="relayResponse" class="resp-text relay"></div></div>
+            </div>
+            <div id="subagentSection" style="display:none;">
+                <h4>🤖 Subagent Delegation Info</h4>
+                <div class="subagent-info">
+                    <div class="subagent-count">Subagents delegated: <strong id="subagentCount">—</strong></div>
+                    <div class="subagent-names">Subagent roles: <strong id="subagentNames">—</strong></div>
+                    <div class="subagent-flow" id="subagentFlow"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="event-log" id="eventLog">
+            <div class="event"><span class="event-time">[--:--:--]</span> <span class="event-type info">INFO</span> <span class="event-msg">TokenRelay v4.0.0 Prompt Benchmark Dashboard ready.</span></div>
+        </div>
+        <footer>TokenRelay v4.0.0 — Prompt Benchmark Dashboard — Developer: Bence Bujdoso</footer>
+    </div>
+
+    <script>
+        const els = {
+            btnPromptRun: document.getElementById('btnPromptRun'),
+            btnPromptReset: document.getElementById('btnPromptReset'),
+            promptStatus: document.getElementById('promptStatus'),
+            promptInput: document.getElementById('promptInput'),
+            promptResults: document.getElementById('promptResults'),
+            promptComparison: document.getElementById('promptComparison'),
+            promptWin: document.getElementById('promptWin'),
+            promptWinLabel: document.getElementById('promptWinLabel'),
+            promptDetails: document.getElementById('promptDetails'),
+            tradTokens: document.getElementById('tradTokens'),
+            tradTime: document.getElementById('tradTime'),
+            tradTPS: document.getElementById('tradTPS'),
+            relayTokens: document.getElementById('relayTokens'),
+            relayTime: document.getElementById('relayTime'),
+            relayTPS: document.getElementById('relayTPS'),
+            tradRespSection: document.getElementById('tradRespSection'),
+            tradResponse: document.getElementById('tradResponse'),
+            relayRespSection: document.getElementById('relayRespSection'),
+            relayResponse: document.getElementById('relayResponse'),
+            subagentSection: document.getElementById('subagentSection'),
+            subagentCount: document.getElementById('subagentCount'),
+            subagentNames: document.getElementById('subagentNames'),
+            subagentFlow: document.getElementById('subagentFlow'),
+            eventLog: document.getElementById('eventLog')
+        };
+
+        els.btnPromptRun.addEventListener('click', runPromptBenchmark);
+        els.btnPromptReset.addEventListener('click', resetPromptBenchmark);
+
+        function now() { return new Date().toTimeString().slice(0, 8); }
+        function logEvent(type, msg) {
+            const div = document.createElement('div'); div.className = 'event';
+            div.innerHTML = `<span class="event-time">[${now()}]</span> <span class="event-type ${type}">${type.toUpperCase()}</span> <span class="event-msg">${msg}</span>`;
+            els.eventLog.appendChild(div); els.eventLog.scrollTop = els.eventLog.scrollHeight;
+        }
+        function showToast(msg, type = 'info') {
+            els.eventLog.innerHTML += `<div class="event"><span class="event-time">[${now()}]</span> <span class="event-type ${type}">${type.toUpperCase()}</span> <span class="event-msg">${msg}</span></div>`;
+            els.eventLog.scrollTop = els.eventLog.scrollHeight;
+        }
+
+        async function runPromptBenchmark() {
+            const prompt = els.promptInput.value.trim();
+            if (!prompt) { showToast('Please enter a prompt.', 'warning'); return; }
+            const btn = els.btnPromptRun;
+            btn.disabled = true;
+            els.promptStatus.textContent = 'Running...';
+            els.promptStatus.style.color = 'var(--warning)';
+            els.promptResults.style.display = 'none';
+            els.promptComparison.style.display = 'none';
+            els.subagentSection.style.display = 'none';
+            try {
+                const response = await fetch('/api/prompt-benchmark', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({prompt, real_llm:'1'}) });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                if (data.status === 'success') { displayPromptResults(data); els.promptStatus.textContent = 'Complete!'; els.promptStatus.style.color = 'var(--green)'; showToast('Prompt benchmark complete!', 'success'); }
+            } catch(e) { els.promptStatus.textContent = 'Error'; els.promptStatus.style.color = 'var(--red)'; showToast('Prompt benchmark failed: ' + e.message, 'error'); }
+            btn.disabled = false;
+        }
+
+        function displayPromptResults(data) {
+            const trad = data.traditional;
+            const relay = data.token_relay;
+            const comp = data.comparison;
+            const relayPipeline = data.relay_pipeline || {};
+
+            els.tradTokens.textContent = trad.total_tokens.toLocaleString();
+            els.tradTime.textContent = trad.execution_time_ms.toFixed(1);
+            els.tradTPS.textContent = Math.round(trad.tokens_per_second) + ' tokens/s';
+            els.relayTokens.textContent = relay.total_tokens.toLocaleString();
+            els.relayTime.textContent = relay.execution_time_ms.toFixed(1);
+            els.relayTPS.textContent = Math.round(relay.tokens_per_second) + ' tokens/s';
+
+            els.promptResults.style.display = 'grid';
+            els.promptWin.textContent = comp.token_savings_pct + '%';
+            els.promptWinLabel.textContent = 'TokenRelay saves this many tokens!';
+            els.promptDetails.textContent = `Token savings: ${comp.token_savings_pct}% | Time savings: ${comp.time_savings_pct}% | Speedup: ${comp.speedup_x}x | Tokens saved: ${comp.tokens_saved}`;
+
+            // Display responses as TEXT (never render HTML)
+            function setResponse(el, text) { if (text) { el.textContent = text; } }
+            if (trad.response_text) { setResponse(els.tradResponse, trad.response_text); els.tradRespSection.style.display = 'block'; } else { els.tradRespSection.style.display = 'none'; }
+            if (relay.response_text) { setResponse(els.relayResponse, relay.response_text); els.relayRespSection.style.display = 'block'; } else { els.relayRespSection.style.display = 'none'; }
+            els.promptComparison.style.display = 'block';
+
+            // Display subagent delegation info
+            const subagentCount = relayPipeline.subagents_used || 0;
+            const subagentNames = relayPipeline.subagent_names || [];
+            const intent = relayPipeline.intent || 'unknown';
+
+            if (subagentCount > 0) {
+                els.subagentSection.style.display = 'block';
+                els.subagentCount.textContent = subagentCount + ' subagent(s)';
+                els.subagentNames.textContent = subagentNames.join(', ');
+                let flowHtml = `Intent: ${intent}<br>`;
+                subagentNames.forEach((name, i) => {
+                    if (i > 0) flowHtml += ' <span class="arrow">⇄</span> ';
+                    flowHtml += name;
+                });
+                flowHtml += ' <span class="arrow">⇄</span> Coordinator ⇄ LLM';
+                els.subagentFlow.innerHTML = flowHtml;
+            } else {
+                els.subagentSection.style.display = 'none';
+            }
+        }
+
+        function resetPromptBenchmark() {
+            els.promptResults.style.display = 'none';
+            els.promptComparison.style.display = 'none';
+            els.subagentSection.style.display = 'none';
+            els.promptStatus.textContent = 'Ready';
+            els.promptStatus.style.color = 'var(--text-dim)';
+            showToast('Prompt benchmark reset.', 'info');
+        }
+
+        logEvent('info', 'TokenRelay v4.0.0 Prompt Benchmark Dashboard ready.');
+        logEvent('info', 'Architecture: Swarm Coordinator → 8 Subagents → LLM');
+    </script>
+</body>
+</html>

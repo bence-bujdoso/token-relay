@@ -115,7 +115,10 @@ class SwarmCoordinator:
     def __init__(self,config=None):
         self.config=config or SwarmConfig(); self.agents={}; self.task_registry={}; self.broker=MessageBroker(); self.circuit_breaker=CircuitBreaker(failure_threshold=5,recovery_timeout=30); self.event_bus=EventBus(); self._leader_id=None
     def register_agent(self,agent_or_role,capabilities=None):
-        if isinstance(agent_or_role,SwarmAgent): self.agents[agent_or_role.agent_id]=agent_or_role; return agent_or_role
+        if isinstance(agent_or_role,SwarmAgent):
+            if agent_or_role.agent_id in self.agents:
+                raise AgentConflictError(f"Agent {agent_or_role.agent_id} already registered")
+            self.agents[agent_or_role.agent_id]=agent_or_role; return agent_or_role
         agent_id=str(uuid.uuid4())[:8]; agent=SwarmAgent(role=agent_or_role,agent_id=agent_id)
         if capabilities: agent.capability_vector.capabilities=capabilities
         self.agents[agent_id]=agent; return agent
@@ -124,8 +127,11 @@ class SwarmCoordinator:
     def distribute_load(self, strategy=None):
         if not strategy: strategy = self.config.load_balance_strategy
         return {}
-    def elect_leader(self): return None
-    def get_active_agents(self): return [a for a in self.agents.values() if a.state!=AgentState.OFFLINE]
+    def elect_leader(self):
+        available = [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
+        if not available: return None
+        leaders = [a for a in available if a.role in (AgentRole.LEADER, AgentRole.COORDINATOR)]
+        return leaders[0] if leaders else available[0] if available else None
     def get_capable_agents(self,capability): return [a for a in self.agents.values() if capability in (a.capability_vector.capabilities or [])]
     def get_status(self):
         return AgentState.ACTIVE if self.agents else AgentState.OFFLINE
@@ -263,5 +269,13 @@ class SelfOrganization:
 def create_self_organization(coordinator, config=None) -> SelfOrganization:
     return SelfOrganization(coordinator, config)
 
-def create_swarm(config=None) -> SwarmCoordinator:
-    return SwarmCoordinator(config)
+def create_swarm(config=None) -> dict:
+    """Create a complete swarm with coordinator, decision, and organization."""
+    coordinator = SwarmCoordinator(config=config)
+    collective = CollectiveDecision(coordinator, config=config)
+    self_org = SelfOrganization(coordinator, config=config)
+    return {
+        "coordinator": coordinator,
+        "collective_decision": collective,
+        "self_organization": self_org,
+    }

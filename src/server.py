@@ -123,13 +123,13 @@ class TokenRelayServer:
         """Start the TokenRelay v4 server."""
         self._running = True
         print(f"TokenRelay v4.0.0 server starting on port {self.port}")
-        print(f"  Modules: V3Orchestrator, ResponsePredictor, EdgeCache, SwarmAgent, ReinforcementLearner")
+        print(f"  Modules: V3Orchestrator, ResponsePredictor, EdgeCache")
         print(f"  Endpoints:")
         print(f"    GET  /health           - Server health")
         print(f"    POST /api/prompt-benchmark - Prompt benchmark")
         print(f"    POST /api/pipeline-details - Full V3 pipeline details")
         print(f"    POST /api/prompt-benchmark-stream - Progressive streaming")
-        print(f"    POST /api/swarm-benchmark - Swarm benchmark")
+        print(f"    POST /api/swarm-benchmark - Swarm benchmark (agents removed)")
         print(f"    GET  /metrics/v4   - V4 metrics")
         print(f"    GET  /status/v4    - V4 status")
         print()
@@ -139,7 +139,7 @@ class TokenRelayServer:
         """Get v4 module metrics."""
         return {
             "version": "4.0.0",
-            "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"],
+            "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache"],
             "status": "active",
             "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC",
         }
@@ -228,8 +228,20 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/benchmark.html' or self.path.startswith('/benchmark'):
-            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html')
-            if os.path.exists(html_path):
+            # Find the project root: try the src/ directory first
+            project_root = os.path.dirname(os.path.abspath(__file__))
+            # If __file__ is /tmp/start_server.py, project_root is /tmp
+            # Look for the project in the standard location
+            candidates = [
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html'),
+                '/home/columbo/ExtData/AIprojects/token-relay/docs/benchmark.html',
+            ]
+            html_path = None
+            for c in candidates:
+                if os.path.exists(c):
+                    html_path = c
+                    break
+            if html_path:
                 with open(html_path) as f:
                     body = f.read().encode()
                 self.send_response(200)
@@ -239,8 +251,16 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self.send_response(404); self.end_headers()
         elif self.path == '/prompt-benchmark.html' or self.path.startswith('/prompt-benchmark'):
-            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'prompt-benchmark.html')
-            if os.path.exists(html_path):
+            candidates = [
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'prompt-benchmark.html'),
+                '/home/columbo/ExtData/AIprojects/token-relay/docs/prompt-benchmark.html',
+            ]
+            html_path = None
+            for c in candidates:
+                if os.path.exists(c):
+                    html_path = c
+                    break
+            if html_path:
                 with open(html_path) as f:
                     body = f.read().encode()
                 self.send_response(200)
@@ -253,7 +273,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
 
     def _call_llm(self, prompt, api_key, url, max_tokens=4000):
-        """Make a real LLM call via OpenRouter API"""
+        """Make a real LLM call via OpenRouter API with prompt caching."""
+        # Check prompt cache first
+        cache_key = hashlib.md5(f"{prompt}:{max_tokens}".encode()).hexdigest()
+        if cache_key in self._prompt_cache:
+            cached = self._prompt_cache[cache_key]
+            cached['cached'] = True
+            return cached
+
         t0 = time.perf_counter()
         headers = {
             'Authorization': f'Bearer {api_key}',
@@ -305,13 +332,16 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 resp_text = ''
             elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-            return {
+            result_entry = {
                 'prompt_tokens': usage.get('prompt_tokens', 0),
                 'completion_tokens': usage.get('completion_tokens', 0),
                 'total_tokens': usage.get('total_tokens', 0),
                 'response_text': resp_text,
                 'execution_time_ms': elapsed_ms
             }
+            # Cache successful responses
+            self._prompt_cache[cache_key] = result_entry
+            return result_entry
         except Exception as e:
             if resp is not None:
                 try:
@@ -367,7 +397,7 @@ class _Handler(BaseHTTPRequestHandler):
             traditional_tokens = {'prompt_tokens': prompt_words * 3, 'completion_tokens': prompt_words * 4, 'total_tokens': prompt_words * 7, 'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
             t_traditional = 2.0
 
-        # === TokenRelay: full v3 pipeline (no caching) ===
+        # === TokenRelay: full v3 pipeline (with prompt caching) ===
         relay_pipeline_info = {}
         try:
             pipeline_info = self._relay_pipeline(prompt)

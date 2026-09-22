@@ -371,9 +371,13 @@ class UniversalTranslator:
                     if src in result:
                         result[tgt] = result.pop(src)
                 result.update(rule.default_values)
+                result["_target_format"] = tgt_str
+                if "token_id" not in result and "id" in result:
+                    result["token_id"] = result.get("id", result.get("token_id", ""))
                 return result
         if src_str in self._format_handlers and tgt_str in self._format_handlers:
             result = self._format_handlers[tgt_str](result)
+            result["_target_format"] = tgt_str
         return result
 
     def convert_batch(self, messages: list, source_format: TranslationFormat,
@@ -389,9 +393,10 @@ class UniversalTranslator:
         """Get number of translation rules."""
         return len(self._rules)
 
-    def add_rule(self, rule: TranslationRule) -> None:
+    def add_rule(self, rule: TranslationRule) -> bool:
         """Add a translation rule."""
         self._rules.append(rule)
+        return True
 
 
 class InteropBRPServer:
