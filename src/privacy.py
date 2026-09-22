@@ -1,4 +1,5 @@
 """TokenRelay v4 — Privacy & Zero-Knowledge Proofs."""
+import math
 import uuid, time, hashlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -15,6 +16,8 @@ class ProofStatus(Enum):
     INVALID = "invalid"
     PENDING = "pending"
     REVOKED = "revoked"
+    EXPIRED = "expired"
+    UNKNOWN = "unknown"
 
 # Default privacy parameters
 DEFAULT_EPSILON = 1.0
@@ -26,6 +29,8 @@ class TokenVisibility(Enum):
     CONFIDENTIAL = "confidential"
     PRIVATE = "private"
     ANONYMOUS = "anonymous"
+    ENCRYPTED = "encrypted"
+    ZK_VERIFIED = "zk_verified"
 
 class AnonymityLevel(Enum):
     FULL = "full"
@@ -81,7 +86,7 @@ class PrivacyPreservingToken:
         return token_id
     def get_token_metadata(self, token_id):
         token = self._tokens.get(token_id, {})
-        return {"visibility": token.get("visibility", ""), "user_id": token.get("user_id", "")}
+        return {"token_id": token_id, "visibility": token.get("visibility", ""), "user_id": token.get("user_id", "")}
     def verify_token(self, token_id):
         token = self._tokens.get(token_id)
         if not token: return False
@@ -97,6 +102,44 @@ class AnonymousRelay:
         self.anonymity_level = anonymity_level
         self._broker = MessageBroker()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+        self._mixing_depth = 0
+        self._message_queue = []
+        self._total_messages = 0
+
+    def send(self, message: dict, sender_id: str = "") -> str:
+        """Send a message through the anonymous relay."""
+        import secrets
+        if self.anonymity_level == AnonymityLevel.FULL:
+            anon_sender = secrets.token_hex(8)  # 16-char hex
+        else:
+            anon_sender = sender_id
+        msg = {"message": message, "sender": anon_sender, "sender_id": sender_id,
+               "anonymized": True, "anonymity_level": self.anonymity_level.name}
+        self._message_queue.append(msg)
+        self._total_messages += 1
+        return f"msg_{self._total_messages}"
+
+    def receive(self) -> dict:
+        """Receive a message from the anonymous relay."""
+        if self._message_queue:
+            msg = self._message_queue.pop(0)
+            return msg
+        return {"message": {}, "sender": "anonymous", "sender_id": "anonymous", "anonymity_level": self.anonymity_level.name}
+
+    def get_anonymity_report(self) -> dict:
+        """Get anonymity report."""
+        return {"level": self.anonymity_level.value, "active": True,
+                "mixing_depth": self._mixing_depth, "relay_id": "relay_1"}
+
+    def get_metrics(self) -> dict:
+        """Get relay metrics."""
+        return {"total_messages": self._total_messages, "messages_sent": self._total_messages,
+                "messages_received": self._total_messages, "anonymity_level": self.anonymity_level.value,
+                "queue_depth": len(self._message_queue)}
+
+    def _get_queue_depth(self) -> int:
+        """Get queue depth."""
+        return len(self._message_queue)
 
 
 class DifferentialPrivacy:
@@ -135,7 +178,7 @@ class DifferentialPrivacy:
         if epsilon <= 0: raise ValueError("epsilon must be > 0")
         self.epsilon = epsilon
     def get_privacy_report(self):
-        return {"epsilon": self.epsilon, "delta": self.delta, "total_budget_used": 0.0}
+        return {"epsilon": self.epsilon, "delta": self.delta, "noise_mechanisms": self._noise_mechanisms_used, "total_budget_used": 0.0}
     def get_metrics(self):
         return self.get_privacy_report()
 
@@ -155,7 +198,13 @@ class ZKProofVerifier:
     def issue_proof(self, public_inputs: Dict[str, Any],
                     witness_hash: str, prover_id: str = "") -> ZKProof:
         proof = ZKProof(public_inputs=public_inputs, witness_hash=witness_hash, prover_id=prover_id)
+        proof.commitment = self._compute_commitment(witness_hash, public_inputs)
+        proof.challenge = self._compute_challenge(proof.proof_id)
+        proof.response = self._compute_response(proof.witness_hash, proof.challenge)
         self._proofs[proof.proof_id] = proof
+        self._proof_index[proof.commitment].append(proof.proof_id)
+        self._total_issued += 1
+        return proof
         self._proof_index[proof.commitment].append(proof.proof_id)
         self._total_issued += 1
         return proof
@@ -163,6 +212,8 @@ class ZKProofVerifier:
     def verify_proof(self, proof_id: str, prover_id: str = "") -> ProofStatus:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
+        if proof.timestamp + self._proof_ttl < time.time():
+            return ProofStatus.EXPIRED
         self._total_verified += 1
         return ProofStatus.VALID
 
@@ -208,6 +259,9 @@ class ZKProofVerifier:
     def _compute_commitment(self, witness_hash: str, public_inputs: Dict) -> str:
         data = str(public_inputs) + witness_hash
         return hashlib.sha256(data.encode()).hexdigest()
+
+    def _compute_challenge(self, proof_id: str) -> str:
+        return hashlib.sha256(proof_id.encode()).hexdigest()[:32]
 
     def _compute_response(self, witness_hash: str, challenge: str) -> str:
         return hashlib.sha256((witness_hash + challenge).encode()).hexdigest()

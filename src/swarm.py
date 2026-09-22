@@ -77,7 +77,7 @@ class SwarmAgent:
     def remove_neighbor(self,agent_id):
         if agent_id in self.neighbors: self.neighbors.remove(agent_id)
     def assign_task(self, task): self.task_queue.append(task); task.assigned_agent = self.agent_id; return True
-    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
+    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.value.upper(),"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
     def serialize_state(self):
         import json
         state={"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"task_count":self.task_count,"completed":len(self.completed_tasks),"failed":len(self.failed_tasks)}
@@ -113,13 +113,24 @@ class SwarmAgent:
         for t in self.task_queue:
             if getattr(t,"task_id",None)==tid: self.record_result(False,0.0); return True
         return False
-    def to_dict(self): return {"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"heartbeat_count":self.heartbeat_count,"task_count":self.task_count,"health_score":self.health_score,"is_available":self.is_available}
+    def to_dict(self): return {"agent_id":self.agent_id,"role":self.role.value.upper(),"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"heartbeat_count":self.heartbeat_count,"task_count":self.task_count,"health_score":self.health_score,"is_available":self.is_available}
     def __repr__(self): return f"SwarmAgent(id={self.agent_id},role={self.role.value})"
 
 class SwarmCoordinator:
     def __init__(self,config=None):
         self.config=config or SwarmConfig(); self.agents={}; self.task_registry={}; self.broker=MessageBroker(); self.circuit_breaker=CircuitBreaker(failure_threshold=5,recovery_timeout=30); self.event_bus=EventBus(); self._leader_id=None
-    def register_agent(self,agent_or_role,capabilities=None):
+    def distribute_load(self, tasks=None):
+        if tasks is None:
+            return {}
+        assignments = {}
+        agents = list(self.agents.values())
+        for i, task_id in enumerate(tasks):
+            if agents:
+                agent = agents[i % len(agents)]
+                assignments[str(task_id)] = agent.agent_id
+        return assignments
+
+    def register_agent(self, agent_or_role, capabilities=None):
         if isinstance(agent_or_role,SwarmAgent):
             if len(self.agents) >= self.config.max_agents:
                 raise SwarmOverloadError(f"Max agents ({self.config.max_agents}) reached")
@@ -135,12 +146,15 @@ class SwarmCoordinator:
         return True
     def unregister_agent(self, agent_id):
         """Alias for deregister_agent - also redistributes tasks."""
-        agent = self.agents.get(agent_id)
-        if agent:
-            for t in self.task_registry.values():
-                if t.assigned_agent == agent_id:
-                    t.status = "pending"
-                    t.assigned_agent = None
+        if agent_id not in self.agents: return False
+        agent = self.agents[agent_id]
+        for t in self.task_registry.values():
+            if getattr(t, 'assigned_agent', None) == agent_id:
+                t.status = "pending"
+                t.assigned_agent = None
+        for t in agent.task_queue:
+            t.status = "pending"
+            t.assigned_agent = None
         self.agents.pop(agent_id, None)
         return True
     def get_agent(self, agent_id):
@@ -151,12 +165,14 @@ class SwarmCoordinator:
     def load_balance(self, strategy=None):
         if not strategy: strategy = self.config.load_balance_strategy
         assignments = {}
-        for tid, task in self.task_registry.items():
+        for tid, task in list(self.task_registry.items()):
             if task.assigned_agent and task.status == "assigned": continue
             agents = [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
             if agents:
                 best = max(agents, key=lambda a: a.evaluate_task_fit(task))
                 task.assigned_agent = best.agent_id
+                task.status = "assigned"
+                best.task_queue.append(task)
                 task.status = "assigned"
                 assignments[tid] = best.agent_id
         return assignments
@@ -165,12 +181,17 @@ class SwarmCoordinator:
         if not available: return None
         leaders = [a for a in available if a.role in (AgentRole.LEADER, AgentRole.COORDINATOR)]
         return leaders[0] if leaders else available[0] if available else None
-    def get_capable_agents(self,capability): return [a for a in self.agents.values() if capability in (a.capability_vector.capabilities or [])]
+    def get_capable_agents(self, capability):
+        caps = capability if isinstance(capability, list) else [capability]
+        return [a for a in self.agents.values() if any(cap in (a.capability_vector.capabilities or []) for cap in caps)]
     def get_active_agents(self): return [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
     def get_status(self):
         return AgentState.ACTIVE if self.agents else AgentState.OFFLINE
     def get_metrics(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry)}
-    def discover_agents(self): return [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values()]
+    def discover_agents(self, role=None):
+        if role is None:
+            return [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values()]
+        return [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values() if a.role == role]
     def submit_task(self,description,priority=TaskPriority.NORMAL,required_capabilities=None,decompose=False):
         task=SwarmTask(description=description,priority=priority,required_capabilities=required_capabilities or {})
         tid=str(task.task_id) if not isinstance(task.task_id,str) else task.task_id
@@ -183,7 +204,13 @@ class SwarmCoordinator:
             b = self.agents[agent_id_b]
             return a.agent_id if a.health_score >= b.health_score else b.agent_id
         return agent_id_a if agent_id_a in self.agents else agent_id_b
-    def decompose_task(self,task_id): return []
+    def decompose_task(self, task_id):
+        task = self.task_registry.get(task_id)
+        if task and hasattr(task, 'sub_tasks') and task.sub_tasks:
+            return task.sub_tasks
+        if task:
+            return [task]
+        return [task_id]
     def broadcast_heartbeat(self): return [a.heartbeat() for a in self.agents.values()]
     def to_dict(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry),"health":self.get_swarm_health(),"config":asdict(self.config)}
     def get_swarm_health(self): return {"total_agents":len(self.agents),"avg_health":sum(a.health_score for a in self.agents.values())/len(self.agents) if self.agents else 0.0,"capacity_utilization":len(self.agents)/self.config.max_agents if self.config.max_agents else 0,"health":sum(a.health_score for a in self.agents.values())/len(self.agents) if self.agents else 0.0}
@@ -199,12 +226,11 @@ class CollectiveDecision:
         yes_weight=sum(v["weight"] for v in self.votes[pid] if v["vote"])
         reached=yes_weight>=total_weight and total_weight>0
         return ConsensusResult(pid, reached, self.votes[pid], "ok", winner=("a" if yes_weight>total_weight-yes_weight else "b") if reached else None, unanimous=(yes_weight==total_weight))
-    def create_proposal(self, description, proposal_id=None):
+    def create_proposal(self, proposal_id, description=None):
         if proposal_id is None:
             proposal_id = str(uuid.uuid4())
-        elif not isinstance(proposal_id, str) or len(proposal_id) > 20:
-            # proposal_id looks like a description, swap
-            proposal_id, description = description, proposal_id
+        if description is None:
+            description = proposal_id
         if proposal_id not in self._proposal_ids:
             self._proposal_ids.add(proposal_id)
             self.votes[proposal_id] = []
@@ -223,11 +249,25 @@ class CollectiveDecision:
         total_weight=sum(v["weight"] for v in self.votes[pid])
         yes_weight=sum(v["weight"] for v in self.votes[pid] if v["vote"])
         reached=yes_weight>=total_weight and total_weight>0
-        return ConsensusResult(pid, reached, self.votes[pid], "ok", winner=("a" if yes_weight>total_weight-yes_weight else "b") if reached else None, unanimous=(yes_weight==total_weight))
+        result = ConsensusResult(pid, reached, self.votes[pid], "ok", winner=("a" if yes_weight>total_weight-yes_weight else "b") if reached else None, unanimous=(yes_weight==total_weight), agent_id=agent_id)
+        if self.votes[pid]:
+            result.vote = self.votes[pid][-1].get("vote")
+        return result
+    def get_proposal_status(self, proposal_id):
+        """Get status of a proposal including vote counts."""
+        if proposal_id not in self._proposal_ids:
+            raise ConsensusError(f"Proposal {proposal_id} not found")
+        votes=self.votes[proposal_id]
+        return {"total_votes":len(votes),"approval_count":sum(1 for v in votes if v.get("vote"))}
+
     def reach_consensus(self,proposal_id):
-        if proposal_id not in self._proposal_ids or not self.votes[proposal_id]: return ConsensusResult(proposal_id, False, [], "No votes")
+        if proposal_id not in self._proposal_ids or not self.votes[proposal_id]:
+            raise ConsensusError(f"No votes for proposal {proposal_id}")
         votes=self.votes[proposal_id]; total_weight=sum(v["weight"] for v in votes); yes_weight=sum(v["weight"] for v in votes if v["vote"])
-        self.consensus_reached=(yes_weight/max(1,total_weight))>=self.config.consensus_threshold; return ConsensusResult(proposal_id, reached, votes, "ok", unanimous=(yes_weight==total_weight))
+        reached=(yes_weight/max(1,total_weight))>self.config.consensus_threshold
+        result=ConsensusResult(proposal_id, reached, votes, "ok", unanimous=(yes_weight==total_weight), agent_id="")
+        self.consensus_reached=reached
+        return result
 
 def create_swarm_agent(role=AgentRole.WORKER,capability_vector=None,config=None): return SwarmAgent(role=role,capability_vector=capability_vector,config=config)
 def create_swarm_coordinator(config=None): return SwarmCoordinator(config=config)
@@ -246,19 +286,26 @@ class Vote:
         self.weight = weight
         self.reasoning = reasoning
 
+@dataclass
 class ConsensusResult:
-    def __init__(self, proposal_id="", reached=True, votes=None, reason="", winner=None, total_weight=1.0, unanimous=False):
-        self.proposal_id = proposal_id
-        self.reached = reached
-        self.votes = votes
-        self.reason = reason
-        self.winner = winner
-        self.total_weight = total_weight
-        self.unanimous = unanimous
-        self.approved = reached
-        self.total_votes = len(votes) if votes else 0
-        self.approval_count = sum(1 for v in votes if v.get("vote")) if votes else 0
-        self.weight = total_weight
+    proposal_id: str = ""
+    reached: bool = True
+    votes: list = None
+    reason: str = ""
+    winner: str = None
+    total_weight: float = 1.0
+    unanimous: bool = False
+    agent_id: str = ""
+    vote: bool = None
+    approved: bool = True
+    total_votes: int = 0
+    approval_count: int = 0
+    weight: float = 1.0
+
+    def __post_init__(self):
+        if self.votes is None:
+            self.votes = []
+        self.approved = self.reached
 
 class SwarmError(Exception): pass
 class AgentNotFoundError(SwarmError): pass
@@ -306,6 +353,25 @@ class SelfOrganization:
                 self.clusters.append([agent.agent_id])
                 self.agent_clusters[agent.agent_id] = len(self.clusters) - 1
         return self.clusters
+        centers = []
+        for agent in agents:
+            added = False
+            for center in centers:
+                if agent.capability_vector.similarity(center) > 0.7:
+                    self.clusters[-1].append(agent.agent_id)
+                    self.agent_clusters[agent.agent_id] = len(self.clusters) - 1
+                    added = True
+                    break
+            if not added:
+                self.clusters.append([agent.agent_id])
+                self.agent_clusters[agent.agent_id] = len(self.clusters) - 1
+                added = True
+                break
+            if not added:
+                centers.append(agent.capability_vector)
+                self.clusters.append([agent.agent_id])
+                self.agent_clusters[agent.agent_id] = len(self.clusters) - 1
+        return self.clusters
     
     def reassign_tasks(self):
         tasks = [t for t in self.coordinator.task_registry.values() if t.status == "pending"]
@@ -328,13 +394,18 @@ class SelfOrganization:
                 self.anomalies.append({"agent_id": agent.agent_id, "type": "low_health", "score": agent.health_score})
         return self.anomalies
     
-    def organize(self): self.cluster_agents(self.strategy); self.reassign_tasks(); self.detect_anomalies(); return self.adapt_organization()
+    def organize(self):
+        self.cluster_agents(self.strategy)
+        self.reassign_tasks()
+        self.detect_anomalies()
+        result = [c for c in self.clusters]
+        return result
     def adapt_organization(self):
         self.adaptations = []
         clusters = self.cluster_agents()
         anomalies = self.detect_anomalies()
         self.adaptations.append({"clusters": len(clusters), "anomalies": len(anomalies), "timestamp": time.time(), "reorganized": len(clusters) > 0})
-        return self.adaptations
+        return self.adaptations[-1] if self.adaptations else {"reorganized": False}
     def to_dict(self):
         return {"clusters": len(self.clusters), "strategy": self.config.organization_strategy.name, "anomalies": len(self.anomalies), "adaptations": len(self.adaptations)}
 
