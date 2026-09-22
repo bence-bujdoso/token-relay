@@ -202,9 +202,9 @@ class TranslationRule:
                  target_protocol: ProtocolType = ProtocolType.MQTT,
                  field_mappings: Optional[Dict[str, str]] = None,
                  default_values: Optional[Dict[str, Any]] = None,
-                 priority: int = 0):
-        self.source_format = source_format.value if isinstance(source_format, TranslationFormat) else source_format
-        self.target_format = target_format.value if isinstance(target_format, TranslationFormat) else target_format
+                 priority: int = 5):
+        self.source_format = source_format if isinstance(source_format, TranslationFormat) else TranslationFormat(source_format)
+        self.target_format = target_format if isinstance(target_format, TranslationFormat) else TranslationFormat(target_format)
         self.source_protocol = source_protocol
         self.target_protocol = target_protocol
         self.field_mappings = field_mappings or {}
@@ -353,7 +353,7 @@ class UniversalTranslator:
         tgt_str = target_format.value if isinstance(target_format, TranslationFormat) else target_format
         result = dict(message)
         for rule in self._rules:
-            if rule.source_format == src_str and rule.target_format == tgt_str:
+            if rule.source_format.value == src_str and rule.target_format.value == tgt_str:
                 for src, tgt in rule.field_mappings.items():
                     if src in result:
                         result[tgt] = result.pop(src)

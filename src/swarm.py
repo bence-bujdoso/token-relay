@@ -15,13 +15,13 @@ from brp import BRPServer
 from car import CARRouter
 
 class AgentState(Enum):
-    IDLE="idle"; BUSY="busy"; OFFLINE="offline"; ERROR="error"; INITIALIZING="initializing"; BACKGROUND="background"
+    IDLE="idle"; BUSY="busy"; OFFLINE="offline"; ERROR="error"; INITIALIZING="initializing"; BACKGROUND="background"; ACTIVE="active"
 class AgentRole(Enum):
     WORKER="worker"; COORDINATOR="coordinator"; LEADER="leader"; FOLLOWER="follower"; SPECIALIST="specialist"; GATEWAY="gateway"; OBSERVER="observer"
 class TaskPriority(Enum):
     LOW="low"; NORMAL="normal"; HIGH="high"; CRITICAL="critical"; BACKGROUND="background"
 class ConsensusMethod(Enum):
-    MAJORITY="majority"; UNANIMOUS="unanimous"; PLURALITY="plurality"
+    MAJORITY="majority"; UNANIMOUS="unanimous"; PLURALITY="plurality"; VOTING="voting"
 class OrganizationStrategy(Enum):
     TASK_SIMILARITY=auto(); RESOURCE_AWARENESS=auto(); HYBRID=auto(); CENTRALIZED=auto()
 
@@ -127,7 +127,8 @@ class SwarmCoordinator:
     def elect_leader(self): return None
     def get_active_agents(self): return [a for a in self.agents.values() if a.state!=AgentState.OFFLINE]
     def get_capable_agents(self,capability): return [a for a in self.agents.values() if capability in (a.capability_vector.capabilities or [])]
-    def get_status(self): return {"agents":len(self.agents),"tasks":len(self.task_registry),"status":"active"}
+    def get_status(self):
+        return AgentState.ACTIVE if self.agents else AgentState.OFFLINE
     def get_metrics(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry)}
     def discover_agents(self,role): return [a for a in self.agents.values() if a.role==role]
     def submit_task(self,description,priority=TaskPriority.NORMAL,required_capabilities=None,decompose=False):
