@@ -77,7 +77,7 @@ class SwarmAgent:
     def remove_neighbor(self,agent_id):
         if agent_id in self.neighbors: self.neighbors.remove(agent_id)
     def assign_task(self, task): self.task_queue.append(task); task.assigned_agent = self.agent_id; return True
-    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.name,"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
+    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
     def serialize_state(self):
         import json
         state={"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"task_count":self.task_count,"completed":len(self.completed_tasks),"failed":len(self.failed_tasks)}
@@ -113,7 +113,7 @@ class SwarmAgent:
         for t in self.task_queue:
             if getattr(t,"task_id",None)==tid: self.record_result(False,0.0); return True
         return False
-    def to_dict(self): return {"agent_id":self.agent_id,"role":self.role.name,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"heartbeat_count":self.heartbeat_count,"task_count":self.task_count,"health_score":self.health_score,"is_available":self.is_available}
+    def to_dict(self): return {"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"heartbeat_count":self.heartbeat_count,"task_count":self.task_count,"health_score":self.health_score,"is_available":self.is_available}
     def __repr__(self): return f"SwarmAgent(id={self.agent_id},role={self.role.value})"
 
 class SwarmCoordinator:
