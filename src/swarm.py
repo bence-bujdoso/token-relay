@@ -141,9 +141,8 @@ class SwarmCoordinator:
                 if t.assigned_agent == agent_id:
                     t.status = "pending"
                     t.assigned_agent = None
-                    t.result = None
-        result = self.agents.pop(agent_id, None) is not None
-        return result
+        self.agents.pop(agent_id, None)
+        return True
     def get_agent(self, agent_id):
         agent = self.agents.get(agent_id)
         if agent is None:
@@ -201,7 +200,11 @@ class CollectiveDecision:
         reached=yes_weight>=total_weight and total_weight>0
         return ConsensusResult(pid, reached, self.votes[pid], "ok", winner=("a" if yes_weight>total_weight-yes_weight else "b") if reached else None, unanimous=(yes_weight==total_weight))
     def create_proposal(self, description, proposal_id=None):
-        proposal_id = proposal_id or str(uuid.uuid4())
+        if proposal_id is None:
+            proposal_id = str(uuid.uuid4())
+        elif not isinstance(proposal_id, str) or len(proposal_id) > 20:
+            # proposal_id looks like a description, swap
+            proposal_id, description = description, proposal_id
         if proposal_id not in self._proposal_ids:
             self._proposal_ids.add(proposal_id)
             self.votes[proposal_id] = []
