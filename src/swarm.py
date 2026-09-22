@@ -77,7 +77,7 @@ class SwarmAgent:
     def remove_neighbor(self,agent_id):
         if agent_id in self.neighbors: self.neighbors.remove(agent_id)
     def assign_task(self, task): self.task_queue.append(task); task.assigned_agent = self.agent_id; return True
-    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
+    def heartbeat(self): self.update_heartbeat(); "return {"agent_id":self.agent_id,"role":self.role.name,"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
     def serialize_state(self):
         import json
         state={"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"task_count":self.task_count,"completed":len(self.completed_tasks),"failed":len(self.failed_tasks)}
@@ -141,7 +141,9 @@ class SwarmCoordinator:
                 if t.assigned_agent == agent_id:
                     t.status = "pending"
                     t.assigned_agent = None
-        return self.agents.pop(agent_id, None) is not None
+                    t.result = None
+        result = self.agents.pop(agent_id, None) is not None
+        return result
     def get_agent(self, agent_id):
         agent = self.agents.get(agent_id)
         if agent is None:
