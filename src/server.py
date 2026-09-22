@@ -151,6 +151,50 @@ class TokenRelayServer:
         """Get v4 status."""
         return {"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]}
 
+    def _relay_pipeline(self, prompt):
+        """Run the TokenRelay v3 pipeline: intent classification + adaptive compression."""
+        # Get intent using lazy-loaded classifier
+        atc_mod = _get_atc()
+        IntentClassifier = atc_mod.IntentClassifier
+        classifier = IntentClassifier()
+        intent, confidence = classifier.classify(prompt)
+        
+        # === ACTUAL COMPRESSION via AdaptiveCompressor ===
+        # Use intent-based compression levels: query=90%, command=70%, request=50%, feedback=30%, system=10%
+        atc_config = atc_mod.ATCConfig()
+        compressor = atc_mod.AdaptiveCompressor(config=atc_config, classifier=classifier)
+        compressed_text, compression_ratio = compressor.compress(prompt, intent)
+        
+        # Calculate token savings
+        original_words = len(prompt.split())
+        compressed_words = max(len(compressed_text.split()), 1)
+        tokens_saved = max(original_words - compressed_words, 0)
+        token_savings_pct = round((1 - compressed_words / max(original_words, 1)) * 100, 2)
+        
+        pipeline_info = {
+            'compressed_text': compressed_text,
+            'intent': intent,
+            'confidence': confidence,
+            'v3_pipeline_steps': [],
+            'token_savings_pct': token_savings_pct,
+            'compression_ratio': compression_ratio,
+            'tokens_saved': tokens_saved,
+            'original_tokens': original_words,
+            'compressed_tokens': compressed_words,
+            'cache_hit': False,
+            'qos_tier': 'unknown',
+            'stream_chunks': 0,
+            'subagents_used': 0,
+            'subagent_names': [],
+        }
+        
+        del classifier, compressor, atc_config
+        gc.collect()
+        
+        return pipeline_info
+
+
+
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -200,65 +244,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
-    def _relay_pipeline(self, prompt):
-        """Run the TokenRelay v3 pipeline: subagent decomposition instruction."""
-        # Get intent using lazy-loaded classifier
-        atc_mod = _get_atc()
-        IntentClassifier = atc_mod.IntentClassifier
-        classifier = IntentClassifier()
-        intent, confidence = classifier.classify(prompt)
-        
-        # === SUBAGENT INTEGRATION ===
-        swarm_mod = _get_swarm()
-        SwarmCoordinator = swarm_mod.SwarmCoordinator
-        sl_mod = _get_selflearning()
-        ReinforcementLearner = sl_mod.ReinforcementLearner
-        
-        agent_map = {'query': 8, 'command': 8, 'request': 8, 'feedback': 6, 'system': 5}
-        num_agents = agent_map.get(intent, 5)
-        
-        agent_names = {
-            'query': ['research_agent', 'summarizer_agent', 'optimizer_agent', 'validator_agent', 'compressor_agent', 'refiner_agent', 'critic_agent', 'synthesizer_agent'],
-            'command': ['coder_agent', 'reviewer_agent', 'optimizer_agent', 'architect_agent', 'tester_agent', 'refiner_agent', 'compressor_agent', 'validator_agent'],
-            'request': ['analyst_agent', 'planner_agent', 'executor_agent', 'validator_agent', 'compressor_agent', 'refiner_agent', 'optimizer_agent', 'critic_agent'],
-            'feedback': ['evaluator_agent', 'improver_agent', 'compressor_agent', 'refiner_agent', 'validator_agent', 'synthesizer_agent'],
-            'system': ['coordinator_agent', 'optimizer_agent', 'compressor_agent', 'refiner_agent', 'critic_agent']
-        }
-        names = agent_names.get(intent, ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5'])
-        
-        # Create coordinator (for subagent delegation info display)
-        coordinator = SwarmCoordinator()
-        learner = ReinforcementLearner()
-        for i, name in enumerate(names[:num_agents]):
-            agent = swarm_mod.SwarmAgent(name, intent)
-            coordinator.register_agent(agent)
-        
-        # Instruction prefix tells the LLM to optimize using subagent strategies
-        subagent_names_str = ', '.join(names[:num_agents])
-        compressed_text = prompt
-        system_message = None
-        
-        pipeline_info = {
-            'compressed_text': compressed_text,
-            'intent': intent,
-            'confidence': confidence,
-            'v3_pipeline_steps': [],
-            'token_savings_pct': 0,
-            'compression_ratio': len(compressed_text) / max(len(prompt), 1),
-            'tokens_saved': 0,
-            'cache_hit': False,
-            'qos_tier': 'unknown',
-            'stream_chunks': 0,
-            'subagents_used': num_agents,
-            'subagent_names': names[:num_agents],
-        }
-        
-        del classifier, coordinator, learner
-        gc.collect()
-        
-        return pipeline_info
-
-    def _call_llm(self, prompt, api_key, url, max_tokens=None):
+    def _call_llm(self, prompt, api_key, url, max_tokens=4000):
         """Make a real LLM call via OpenRouter API"""
         t0 = time.perf_counter()
         headers = {
