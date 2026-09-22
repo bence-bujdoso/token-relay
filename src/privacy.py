@@ -130,8 +130,9 @@ class ZKProofVerifier:
         if not proof: return ProofStatus.INVALID
         if proof.timestamp + self._proof_ttl < time.time():
             return ProofStatus.EXPIRED
-        if proof.revoked or not proof.verified:
+        if proof.revoked:
             return ProofStatus.INVALID
+        proof.verified = True
         self._total_verified += 1
         return ProofStatus.VALID
 
@@ -161,6 +162,7 @@ class ZKProofVerifier:
             "total_verified": self._total_verified,
             "total_failed": self._total_failed,
             "active_proofs": len([p for p in self._proofs.values() if p]),
+            "success_rate": round(self._total_verified / max(1, self._total_issued + self._total_failed) * 100, 2),
         }
 
 

@@ -16,17 +16,16 @@ from atc import IntentClassifier
 
 
 class LearningState(Enum):
-    EXPLORING = "exploring"
-    EXPLOITING = "exploiting"
-    CONVERGING = "converging"
-    STEADY = "steady"
+    EXPLORATION = "exploration"
+    EXPLOITATION = "exploitation"
+    CONVERGED = "converged"
+    DECAYING = "decaying"
 
 class CompressionAction(Enum):
-    NONE = "none"
-    LIGHT = "light"
-    MODERATE = "moderate"
-    HEAVY = "heavy"
     INCREASE = "increase"
+    DECREASE = "decrease"
+    MAINTAIN = "maintain"
+    RESET = "reset"
 
 class RewardSignal(Enum):
     THROUGHPUT = "throughput"
@@ -77,7 +76,8 @@ class AgentPairStats:
     @property
     def success_rate(self) -> float:
         total = self.success_count + self.failure_count
-        return self.success_count / max(1, total) * 100.0
+        if total == 0: return 100.0
+        return self.success_count / total * 100.0
 
     @property
     def avg_latency_ms(self) -> float:
@@ -245,7 +245,7 @@ class PerformanceTracker:
         if key not in self._stats:
             self._stats[key] = AgentPairStats(agent_a=agent_a, agent_b=agent_b)
         self._stats[key].record(latency_ms, tokens_saved, success)
-        return {"key": key, "success": success}
+        return {"pair_id": key, "success": success}
 
     def get_stats(self, key: str) -> AgentPairStats:
         return self._stats.get(key, AgentPairStats(agent_a=key, agent_b=""))
