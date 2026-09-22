@@ -119,8 +119,13 @@ class AdapterRegistry:
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
 
 
-    def register_adapter(self, adapter: ExternalAdapter) -> str:
+    def register_adapter(self, adapter=None, **kwargs) -> str:
         """Register an external adapter."""
+        if kwargs:
+            config = AdapterConfig(**kwargs)
+            adapter = ExternalAdapter(adapter_id=str(uuid.uuid4())[:8], config=config)
+        if adapter.adapter_id in self._adapters:
+            raise ValueError(f"Adapter {adapter.adapter_id} already registered")
         self._adapters[adapter.adapter_id] = adapter
         self._protocol_index[adapter.config.protocol_type].append(adapter.adapter_id)
         return adapter.adapter_id

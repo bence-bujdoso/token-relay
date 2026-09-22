@@ -61,8 +61,8 @@ class SLConfig:
 
 @dataclass
 class AgentPairStats:
-    agent_a: str
-    agent_b: str
+    agent_a: str = ""
+    agent_b: str = ""
     total_interactions: int = 0
     total_latency: float = 0.0
     total_latency_ms: float = 0.0
@@ -73,7 +73,11 @@ class AgentPairStats:
     latency_samples: List[float] = field(default_factory=list)
     avg_latency: float = 0.0
     avg_tokens_saved: float = 0.0
-    success_rate: float = 0.0
+
+    @property
+    def success_rate(self) -> float:
+        total = self.success_count + self.failure_count
+        return self.success_count / max(1, total) * 100.0
 
     @property
     def avg_latency_ms(self) -> float:
@@ -99,7 +103,6 @@ class AgentPairStats:
             self.failure_count += 1
         self.avg_latency = self.total_latency / self.total_interactions
         self.avg_tokens_saved = self.total_tokens_saved / self.total_interactions
-        self.success_rate = self.success_count / max(1, self.total_interactions) * 100.0
 
 
 @dataclass
