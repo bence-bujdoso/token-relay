@@ -92,10 +92,11 @@ def _get_v3():
 class TokenRelayServer:
     """TokenRelay v4 server with benchmark and integration endpoints."""
 
-    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_peak_memory_mb')
+    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_peak_memory_mb', '_app')
 
     def __init__(self, port: int = 8081):
         self.port = port
+        self._app = None
         self.broker = None  # Lazy-loaded
         self.registry = None  # Lazy-loaded
         self.bridge = None  # Lazy-loaded

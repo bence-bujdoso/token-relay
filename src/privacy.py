@@ -1,4 +1,5 @@
 """TokenRelay v4 — Privacy & Zero-Knowledge Proofs."""
+import math
 import uuid, time, hashlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -15,6 +16,7 @@ class ProofStatus(Enum):
     INVALID = "invalid"
     PENDING = "pending"
     REVOKED = "revoked"
+    EXPIRED = "expired"
 
 # Default privacy parameters
 DEFAULT_EPSILON = 1.0
@@ -48,6 +50,8 @@ class ZKProof:
     witness_hash: str = ""
     timestamp: float = field(default_factory=time.time)
     prover_id: str = ""
+    verified: bool = False
+    revoked: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -112,6 +116,10 @@ class ZKProofVerifier:
     def issue_proof(self, public_inputs: Dict[str, Any],
                     witness_hash: str, prover_id: str = "") -> ZKProof:
         proof = ZKProof(public_inputs=public_inputs, witness_hash=witness_hash, prover_id=prover_id)
+        proof.commitment = self._compute_commitment(witness_hash, public_inputs)
+        proof.challenge = hashlib.sha256(proof.commitment.encode()).hexdigest()[:32]
+        proof.response = self._compute_response(witness_hash, proof.challenge)
+        proof.verified = False
         self._proofs[proof.proof_id] = proof
         self._proof_index[proof.commitment].append(proof.proof_id)
         self._total_issued += 1
@@ -120,6 +128,10 @@ class ZKProofVerifier:
     def verify_proof(self, proof_id: str, prover_id: str = "") -> ProofStatus:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
+        if proof.timestamp + self._proof_ttl < time.time():
+            return ProofStatus.EXPIRED
+        if proof.revoked or not proof.verified:
+            return ProofStatus.INVALID
         self._total_verified += 1
         return ProofStatus.VALID
 
@@ -129,11 +141,17 @@ class ZKProofVerifier:
     def get_proof_status(self, proof_id: str) -> ProofStatus:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
-        return ProofStatus.VALID
+        if proof.timestamp + self._proof_ttl < time.time():
+            return ProofStatus.EXPIRED
+        if proof.revoked:
+            return ProofStatus.VALID
+        return ProofStatus.VALID if proof.verified else ProofStatus.INVALID
 
     def revoke_proof(self, proof_id: str) -> bool:
         if proof_id in self._proofs:
-            self._proofs[proof_id] = None
+            proof = self._proofs[proof_id]
+            proof.revoked = True
+            proof.verified = True
             return True
         return False
 

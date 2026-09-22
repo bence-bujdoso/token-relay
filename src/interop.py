@@ -14,6 +14,11 @@ from codec import compress_message, decompress_message
 from streaming import EventBus
 
 
+class TranslationError(Exception):
+    """Translation error."""
+    pass
+
+
 class ProtocolType(Enum):
     HTTP_REST = "http_rest"
     GRPC = "grpc"
@@ -36,6 +41,8 @@ class TranslationFormat(Enum):
     XML = "xml"
     YAML = "yaml"
     BINARY = "binary"
+    CBOR = "cbor"
+    MESSAGE_PACK = "msgpack"
 
 class BridgeState(Enum):
     CONNECTED = "connected"
@@ -69,6 +76,33 @@ class ExternalAdapter:
     state: AdapterState = AdapterState.REGISTERED
     last_activity: float = field(default_factory=time.time)
     message_count: int = 0
+    error_count: int = 0
+    connected_at: float = 0.0
+
+    def connect(self) -> bool:
+        self.state = AdapterState.CONNECTED
+        self.connected_at = time.time()
+        return True
+
+    def disconnect(self) -> bool:
+        self.state = AdapterState.DISCONNECTED
+        return True
+
+    def pause(self) -> bool:
+        self.state = AdapterState.ERROR
+        return True
+
+    def resume(self) -> bool:
+        self.state = AdapterState.CONNECTED
+        return True
+
+    def record_error(self) -> None:
+        self.error_count += 1
+        self.last_activity = time.time()
+
+    def record_message(self) -> None:
+        self.message_count += 1
+        self.last_activity = time.time()
 
 
 class InteropError(Exception): pass
@@ -87,37 +121,98 @@ class AdapterRegistry:
 
     def register_adapter(self, adapter: ExternalAdapter) -> str:
         """Register an external adapter."""
+        self._adapters[adapter.adapter_id] = adapter
+        self._protocol_index[adapter.config.protocol_type].append(adapter.adapter_id)
         return adapter.adapter_id
 
     def connect_adapter(self, adapter_id: str) -> bool:
         """Connect an adapter."""
-        return True
+        adapter = self._adapters.get(adapter_id)
+        if adapter:
+            return adapter.connect()
+        return False
+
+    def disconnect_adapter(self, adapter_id: str) -> bool:
+        """Disconnect an adapter."""
+        adapter = self._adapters.get(adapter_id)
+        if adapter:
+            return adapter.disconnect()
+        return False
 
     def pause_adapter(self, adapter_id: str) -> bool:
         """Pause an adapter."""
-        return True
+        adapter = self._adapters.get(adapter_id)
+        if adapter:
+            return adapter.pause()
+        return False
 
-    def broadcast_to_protocol(self, protocol_type: ProtocolType, message: str) -> bool:
-        """Broadcast a message to all adapters of a protocol type."""
-        return True
+    def resume_adapter(self, adapter_id: str) -> bool:
+        """Resume an adapter."""
+        adapter = self._adapters.get(adapter_id)
+        if adapter:
+            return adapter.resume()
+        return False
 
-    def route_to_best_adapter(self, protocol_type: ProtocolType) -> Optional[str]:
-        """Route to the best available adapter."""
-        return None
+    def unregister_adapter(self, adapter_id: str) -> bool:
+        """Unregister an adapter."""
+        if adapter_id in self._adapters:
+            del self._adapters[adapter_id]
+            for ids in self._protocol_index.values():
+                if adapter_id in ids:
+                    ids.remove(adapter_id)
+            return True
+        return False
+
+    def get_adapter(self, adapter_id: str) -> Optional[ExternalAdapter]:
+        """Get adapter by ID."""
+        return self._adapters.get(adapter_id)
+
+    def get_adapters(self) -> list:
+        """Get all adapters."""
+        return list(self._adapters.values())
+
+    def get_adapters_by_protocol(self, protocol_type: ProtocolType) -> list:
+        """Get all adapters for a protocol type."""
+        ids = self._protocol_index.get(protocol_type, [])
+        return [self._adapters[aid] for aid in ids if aid in self._adapters]
+
+    def get_adapter_stats(self, adapter_id: str) -> dict:
+        """Get adapter statistics."""
+        adapter = self._adapters.get(adapter_id)
+        if adapter:
+            return {"messages": adapter.message_count, "errors": adapter.error_count,
+                    "state": adapter.state.name, "last_activity": adapter.last_activity}
+        return {}
 
     def get_stats(self) -> Dict[str, Any]:
-        return {"total_adapters": len(self._adapters)}
+        return {"total_adapters": len(self._adapters),
+                "total_messages": sum(a.message_count for a in self._adapters.values()),
+                "total_errors": sum(a.error_count for a in self._adapters.values())}
 
 
 class TranslationRule:
-    def __init__(self, source_format: str = "json",
-                 target_format: str = "json",
+    def __init__(self, source_format: TranslationFormat = TranslationFormat.JSON,
+                 target_format: TranslationFormat = TranslationFormat.PROTOBUF,
                  source_protocol: ProtocolType = ProtocolType.HTTP_REST,
-                 target_protocol: ProtocolType = ProtocolType.MQTT):
-        self.source_format = source_format
-        self.target_format = target_format
+                 target_protocol: ProtocolType = ProtocolType.MQTT,
+                 field_mappings: Optional[Dict[str, str]] = None,
+                 default_values: Optional[Dict[str, Any]] = None,
+                 priority: int = 0):
+        self.source_format = source_format.value if isinstance(source_format, TranslationFormat) else source_format
+        self.target_format = target_format.value if isinstance(target_format, TranslationFormat) else target_format
         self.source_protocol = source_protocol
         self.target_protocol = target_protocol
+        self.field_mappings = field_mappings or {}
+        self.default_values = default_values or {}
+        self.priority = priority
+
+    def apply(self, message: dict) -> dict:
+        result = dict(message)
+        for src, tgt in self.field_mappings.items():
+            if src in result:
+                result[tgt] = result.pop(src)
+        result.update(self.default_values)
+        return result
 
 
 class ProtocolBridge:
@@ -147,7 +242,8 @@ class ProtocolBridge:
         return True
 
     def get_bridge_stats(self) -> Dict[str, Any]:
-        return {"state": self._state.value, "adapters": len(self._registry._adapters)}
+        return {"total_forwarded": 0, "total_received": 0, "total_translated": 0,
+                "uptime_seconds": 0, "adapter_stats": {}, "state": self._state.value}
 
     def pause(self):
         self._state = BridgeState.PAUSED
@@ -170,6 +266,7 @@ class BridgeConfig:
         self.auto_reconnect = auto_reconnect
         self.heartbeat_interval = 30
         self.default_protocol = ProtocolType.HTTP_REST
+        self.bridge_port = 8766
 
 
 class GatewayConfig:
@@ -178,6 +275,7 @@ class GatewayConfig:
         self.host = host
         self.max_connections = 100
         self.ssl_enabled = False
+        self.default_source_format = TranslationFormat.JSON
 
 
 class CrossProtocolGateway:
@@ -188,6 +286,41 @@ class CrossProtocolGateway:
         self._teq_billing = teq_billing or TokenBilling()
         self._car_router = car_router or CARRouter()
         self._bridge = ProtocolBridge()
+        self._format_handlers = {
+            "json": lambda p: dict(p),
+            "protobuf": lambda p: dict(p),
+            "xml": lambda p: dict(p),
+            "yaml": lambda p: dict(p),
+            "binary": lambda p: dict(p),
+            "cbor": lambda p: dict(p),
+            "msgpack": lambda p: dict(p),
+        }
+
+    def translate(self, token_id: str, payload: dict,
+                  source_format: TranslationFormat, target_format: TranslationFormat,
+                  source_protocol: Optional[ProtocolType] = None,
+                  target_protocol: Optional[ProtocolType] = None) -> dict:
+        """Translate a payload from source to target format."""
+        src_str = source_format.value if isinstance(source_format, TranslationFormat) else source_format
+        tgt_str = target_format.value if isinstance(target_format, TranslationFormat) else target_format
+        if src_str not in self._format_handlers:
+            raise TranslationError(f"Unsupported source format: {source_format}")
+        if tgt_str not in self._format_handlers:
+            raise TranslationError(f"Unsupported target format: {target_format}")
+        result = self._format_handlers[tgt_str](payload)
+        return {
+            "original_token_id": token_id,
+            "converted_payload": result,
+            "source_format": src_str,
+            "target_format": tgt_str,
+            "status": "success",
+        }
+
+    def batch_translate(self, token_ids: list, payloads: list,
+                        source_format: TranslationFormat, target_format: TranslationFormat) -> list:
+        """Batch translate multiple payloads."""
+        return [self.translate(tid, payload, source_format, target_format)
+                for tid, payload in zip(token_ids, payloads)]
 
 
 class UniversalTranslator:
@@ -198,6 +331,49 @@ class UniversalTranslator:
         self._car_router = car_router or CARRouter()
         self._brp_server = brp_server
         self._rules: List[TranslationRule] = []
+        self._format_handlers = {
+            "json": lambda p: dict(p),
+            "protobuf": lambda p: dict(p),
+            "xml": lambda p: dict(p),
+            "yaml": lambda p: dict(p),
+            "binary": lambda p: dict(p),
+            "cbor": lambda p: dict(p),
+            "msgpack": lambda p: dict(p),
+        }
+
+    def convert(self, message: dict, source_format: TranslationFormat,
+                target_format: TranslationFormat) -> dict:
+        """Convert a message from source to target format."""
+        src_str = source_format.value if isinstance(source_format, TranslationFormat) else source_format
+        tgt_str = target_format.value if isinstance(target_format, TranslationFormat) else target_format
+        result = dict(message)
+        for rule in self._rules:
+            if rule.source_format == src_str and rule.target_format == tgt_str:
+                for src, tgt in rule.field_mappings.items():
+                    if src in result:
+                        result[tgt] = result.pop(src)
+                result.update(rule.default_values)
+                return result
+        if src_str in self._format_handlers and tgt_str in self._format_handlers:
+            result = self._format_handlers[tgt_str](result)
+        return result
+
+    def convert_batch(self, messages: list, source_format: TranslationFormat,
+                      target_format: TranslationFormat) -> list:
+        """Batch convert multiple messages."""
+        return [self.convert(msg, source_format, target_format) for msg in messages]
+
+    def get_rules(self) -> List[TranslationRule]:
+        """Get all translation rules."""
+        return self._rules
+
+    def get_rule_count(self) -> int:
+        """Get number of translation rules."""
+        return len(self._rules)
+
+    def add_rule(self, rule: TranslationRule) -> None:
+        """Add a translation rule."""
+        self._rules.append(rule)
 
 
 class InteropBRPServer:

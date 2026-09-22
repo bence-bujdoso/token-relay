@@ -26,7 +26,7 @@ class CompressionAction(Enum):
     LIGHT = "light"
     MODERATE = "moderate"
     HEAVY = "heavy"
-    AGGRESSIVE = "aggressive"
+    INCREASE = "increase"
 
 class RewardSignal(Enum):
     THROUGHPUT = "throughput"
@@ -41,6 +41,9 @@ class SLConfig:
     discount_factor: float = 0.95
     gamma: float = 0.95
     epsilon: float = 0.1
+    exploration_rate: float = 1.0
+    min_exploration: float = 0.01
+    episodes: int = 1000
     max_episodes: int = 1000
     max_steps: int = 100
     reward_decay: float = 0.99
@@ -49,6 +52,11 @@ class SLConfig:
     batch_size: int = 32
     memory_size: int = 10_000
     hidden_dim: int = 128
+    default_compression: float = 0.5
+    failure_penalty: float = -1.0
+    reward_token_weight: float = 0.4
+    reward_latency_weight: float = 0.3
+    reward_success_weight: float = 0.3
 
 
 @dataclass
@@ -57,35 +65,60 @@ class AgentPairStats:
     agent_b: str
     total_interactions: int = 0
     total_latency: float = 0.0
+    total_latency_ms: float = 0.0
     total_tokens_saved: int = 0
     success_count: int = 0
     failure_count: int = 0
+    compression_level: float = 0.5
+    latency_samples: List[float] = field(default_factory=list)
     avg_latency: float = 0.0
     avg_tokens_saved: float = 0.0
     success_rate: float = 0.0
 
+    @property
+    def avg_latency_ms(self) -> float:
+        return self.total_latency_ms / max(1, self.total_interactions)
+
+    @property
+    def tokens_saved(self) -> int:
+        return self.total_tokens_saved
+
+    @property
+    def is_learning(self) -> bool:
+        return self.total_interactions >= 10
+
     def record(self, latency: float, tokens_saved: int, success: bool):
         self.total_interactions += 1
         self.total_latency += latency
+        self.total_latency_ms += latency
         self.total_tokens_saved += tokens_saved
+        self.latency_samples.append(latency)
         if success:
             self.success_count += 1
         else:
             self.failure_count += 1
         self.avg_latency = self.total_latency / self.total_interactions
         self.avg_tokens_saved = self.total_tokens_saved / self.total_interactions
-        self.success_rate = self.success_count / max(1, self.total_interactions)
+        self.success_rate = self.success_count / max(1, self.total_interactions) * 100.0
 
 
 @dataclass
 class LearningEpisode:
     episode_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    state_key: str = ""
+    action: str = ""
+    reward: float = 0.0
+    q_value: float = 0.0
+    latency_ms: float = 0.0
+    tokens_saved: int = 0
+    success: bool = True
     steps: int = 0
     total_reward: float = 0.0
     start_time: float = field(default_factory=time.time)
     end_time: Optional[float] = None
     actions: List[str] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
 
 
 class ReinforcementLearner:
@@ -112,6 +145,16 @@ class ReinforcementLearner:
 
     def set_q_value(self, state: str, action: str, value: float):
         self._q_table[state][action] = value
+
+    def update_q_value(self, state: str, action: str, reward: float, next_state_key: str = ""):
+        """Update Q-value with optional next state."""
+        if next_state_key and next_state_key in self._q_table:
+            max_next = max(self._q_table[next_state_key].values(), default=0)
+        else:
+            max_next = max(self._q_table.get(next_state, {}).values(), default=0)
+        self._q_table[state][action] += self.config.learning_rate * (
+            reward + self.config.discount_factor * max_next - self._q_table[state][action])
+        self._metrics.total_steps += 1
 
     def get_optimal_policy(self, state: str) -> List[str]:
         if state not in self._q_table: return []
@@ -215,6 +258,18 @@ class FeedbackLoop:
     def get_feedback_quality(self, agent_a: str, agent_b: str) -> Dict[str, Any]:
         stats = self._tracker.get_stats(f"{agent_a}_{agent_b}")
         return {"quality": stats.success_rate, "interactions": stats.total_interactions}
+
+    def run_episode(self, pair: str, episodes: int = 1) -> Dict[str, Any]:
+        """Run RL episodes for a pair."""
+        results = []
+        for _ in range(episodes):
+            ep = self._learner.run_episode(lambda: pair)
+            results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
+        return {"pair": pair, "episodes": results}
+
+    def get_adaptation_summary(self) -> Dict[str, Any]:
+        """Get adaptation summary."""
+        return {"episodes": self._learner._metrics.total_episodes, "steps": self._learner._metrics.total_steps}
 
 
 class SLBundle:

@@ -17,7 +17,7 @@ from car import CARRouter
 class AgentState(Enum):
     IDLE="idle"; BUSY="busy"; OFFLINE="offline"; ERROR="error"; INITIALIZING="initializing"; BACKGROUND="background"
 class AgentRole(Enum):
-    WORKER="worker"; COORDINATOR="coordinator"; LEADER="leader"; FOLLOWER="follower"; SPECIALIST="specialist"
+    WORKER="worker"; COORDINATOR="coordinator"; LEADER="leader"; FOLLOWER="follower"; SPECIALIST="specialist"; GATEWAY="gateway"; OBSERVER="observer"
 class TaskPriority(Enum):
     LOW="low"; NORMAL="normal"; HIGH="high"; CRITICAL="critical"; BACKGROUND="background"
 class ConsensusMethod(Enum):
