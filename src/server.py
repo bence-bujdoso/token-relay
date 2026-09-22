@@ -92,11 +92,10 @@ def _get_v3():
 class TokenRelayServer:
     """TokenRelay v4 server with benchmark and integration endpoints."""
 
-    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_prompt_cache', '_peak_memory_mb', '_app')
+    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_prompt_cache', '_peak_memory_mb')
 
     def __init__(self, port: int = 8081):
         self.port = port
-        self._app = None
         self.broker = None  # Lazy-loaded
         self.registry = None  # Lazy-loaded
         self.bridge = None  # Lazy-loaded
@@ -123,13 +122,13 @@ class TokenRelayServer:
         """Start the TokenRelay v4 server."""
         self._running = True
         print(f"TokenRelay v4.0.0 server starting on port {self.port}")
-        print(f"  Modules: V3Orchestrator, ResponsePredictor, EdgeCache")
+        print(f"  Modules: V3Orchestrator, ResponsePredictor, EdgeCache, SwarmAgent, ReinforcementLearner")
         print(f"  Endpoints:")
         print(f"    GET  /health           - Server health")
         print(f"    POST /api/prompt-benchmark - Prompt benchmark")
         print(f"    POST /api/pipeline-details - Full V3 pipeline details")
         print(f"    POST /api/prompt-benchmark-stream - Progressive streaming")
-        print(f"    POST /api/swarm-benchmark - Swarm benchmark (agents removed)")
+        print(f"    POST /api/swarm-benchmark - Swarm benchmark")
         print(f"    GET  /metrics/v4   - V4 metrics")
         print(f"    GET  /status/v4    - V4 status")
         print()
@@ -139,7 +138,7 @@ class TokenRelayServer:
         """Get v4 module metrics."""
         return {
             "version": "4.0.0",
-            "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache"],
+            "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"],
             "status": "active",
             "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC",
         }
@@ -150,58 +149,7 @@ class TokenRelayServer:
 
     def _handle_v4_status(self) -> dict:
         """Get v4 status."""
-        return {"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache"]}
-
-    def _relay_pipeline(self, prompt):
-        """Run the TokenRelay v3 pipeline: intent classification + adaptive compression."""
-        # Check prompt cache first for pipeline results
-        cache_key = f"pipeline:{hashlib.md5(prompt.encode()).hexdigest()}"
-        if cache_key in self._prompt_cache:
-            return self._prompt_cache[cache_key]
-
-        # Get intent using lazy-loaded classifier
-        atc_mod = _get_atc()
-        IntentClassifier = atc_mod.IntentClassifier
-        classifier = IntentClassifier()
-        intent, confidence = classifier.classify(prompt)
-        
-        # === ACTUAL COMPRESSION via AdaptiveCompressor ===
-        # Use intent-based compression levels: query=90%, command=70%, request=50%, feedback=30%, system=10%
-        atc_config = atc_mod.ATCConfig()
-        compressor = atc_mod.AdaptiveCompressor(config=atc_config, classifier=classifier)
-        compressed_text, compression_ratio = compressor.compress(prompt, intent)
-        
-        # Calculate token savings
-        original_words = len(prompt.split())
-        compressed_words = max(len(compressed_text.split()), 1)
-        tokens_saved = max(original_words - compressed_words, 0)
-        token_savings_pct = round((1 - compressed_words / max(original_words, 1)) * 100, 2)
-        
-        pipeline_info = {
-            'compressed_text': compressed_text,
-            'intent': intent,
-            'confidence': confidence,
-            'v3_pipeline_steps': [],
-            'token_savings_pct': token_savings_pct,
-            'compression_ratio': compression_ratio,
-            'tokens_saved': tokens_saved,
-            'original_tokens': original_words,
-            'compressed_tokens': compressed_words,
-            'cache_hit': False,
-            'qos_tier': 'unknown',
-            'stream_chunks': 0,
-            'subagents_used': 0,
-            'subagent_names': [],
-        }
-        
-        # Cache the pipeline result
-        self._prompt_cache[cache_key] = pipeline_info
-        
-        del classifier, compressor, atc_config
-        
-        return pipeline_info
-
-
+        return {"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]}
 
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -220,28 +168,16 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/metrics/v4':
-            body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
+            body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/status/v4':
-            body = json.dumps({"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache"]})
+            body = json.dumps({"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]})
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/benchmark.html' or self.path.startswith('/benchmark'):
-            # Find the project root: try the src/ directory first
-            project_root = os.path.dirname(os.path.abspath(__file__))
-            # If __file__ is /tmp/start_server.py, project_root is /tmp
-            # Look for the project in the standard location
-            candidates = [
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html'),
-                '/home/columbo/ExtData/AIprojects/token-relay/docs/benchmark.html',
-            ]
-            html_path = None
-            for c in candidates:
-                if os.path.exists(c):
-                    html_path = c
-                    break
-            if html_path:
+            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html')
+            if os.path.exists(html_path):
                 with open(html_path) as f:
                     body = f.read().encode()
                 self.send_response(200)
@@ -251,16 +187,8 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self.send_response(404); self.end_headers()
         elif self.path == '/prompt-benchmark.html' or self.path.startswith('/prompt-benchmark'):
-            candidates = [
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'prompt-benchmark.html'),
-                '/home/columbo/ExtData/AIprojects/token-relay/docs/prompt-benchmark.html',
-            ]
-            html_path = None
-            for c in candidates:
-                if os.path.exists(c):
-                    html_path = c
-                    break
-            if html_path:
+            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'prompt-benchmark.html')
+            if os.path.exists(html_path):
                 with open(html_path) as f:
                     body = f.read().encode()
                 self.send_response(200)
@@ -272,15 +200,66 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
-    def _call_llm(self, prompt, api_key, url, max_tokens=4000):
-        """Make a real LLM call via OpenRouter API with prompt caching."""
-        # Check prompt cache first
-        cache_key = hashlib.md5(f"{prompt}:{max_tokens}".encode()).hexdigest()
-        if cache_key in self._prompt_cache:
-            cached = self._prompt_cache[cache_key]
-            cached['cached'] = True
-            return cached
+    def _relay_pipeline(self, prompt):
+        """Run the TokenRelay v3 pipeline: subagent decomposition instruction."""
+        # Get intent using lazy-loaded classifier
+        atc_mod = _get_atc()
+        IntentClassifier = atc_mod.IntentClassifier
+        classifier = IntentClassifier()
+        intent, confidence = classifier.classify(prompt)
+        
+        # === SUBAGENT INTEGRATION ===
+        swarm_mod = _get_swarm()
+        SwarmCoordinator = swarm_mod.SwarmCoordinator
+        sl_mod = _get_selflearning()
+        ReinforcementLearner = sl_mod.ReinforcementLearner
+        
+        agent_map = {'query': 8, 'command': 8, 'request': 8, 'feedback': 6, 'system': 5}
+        num_agents = agent_map.get(intent, 5)
+        
+        agent_names = {
+            'query': ['research_agent', 'summarizer_agent', 'optimizer_agent', 'validator_agent', 'compressor_agent', 'refiner_agent', 'critic_agent', 'synthesizer_agent'],
+            'command': ['coder_agent', 'reviewer_agent', 'optimizer_agent', 'architect_agent', 'tester_agent', 'refiner_agent', 'compressor_agent', 'validator_agent'],
+            'request': ['analyst_agent', 'planner_agent', 'executor_agent', 'validator_agent', 'compressor_agent', 'refiner_agent', 'optimizer_agent', 'critic_agent'],
+            'feedback': ['evaluator_agent', 'improver_agent', 'compressor_agent', 'refiner_agent', 'validator_agent', 'synthesizer_agent'],
+            'system': ['coordinator_agent', 'optimizer_agent', 'compressor_agent', 'refiner_agent', 'critic_agent']
+        }
+        names = agent_names.get(intent, ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5'])
+        
+        # Create coordinator (for subagent delegation info display)
+        coordinator = SwarmCoordinator()
+        learner = ReinforcementLearner()
+        for i, name in enumerate(names[:num_agents]):
+            agent = swarm_mod.SwarmAgent(name, intent)
+            coordinator.register_agent(agent)
+        
+        # Instruction prefix tells the LLM to optimize using subagent strategies
+        subagent_names_str = ', '.join(names[:num_agents])
+        compressed_text = prompt
+        system_message = None
+        
+        pipeline_info = {
+            'compressed_text': compressed_text,
+            'intent': intent,
+            'confidence': confidence,
+            'v3_pipeline_steps': [],
+            'token_savings_pct': 0,
+            'compression_ratio': len(compressed_text) / max(len(prompt), 1),
+            'tokens_saved': 0,
+            'cache_hit': False,
+            'qos_tier': 'unknown',
+            'stream_chunks': 0,
+            'subagents_used': num_agents,
+            'subagent_names': names[:num_agents],
+        }
+        
+        del classifier, coordinator, learner
+        gc.collect()
+        
+        return pipeline_info
 
+    def _call_llm(self, prompt, api_key, url, max_tokens=None):
+        """Make a real LLM call via OpenRouter API"""
         t0 = time.perf_counter()
         headers = {
             'Authorization': f'Bearer {api_key}',
@@ -332,16 +311,13 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 resp_text = ''
             elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-            result_entry = {
+            return {
                 'prompt_tokens': usage.get('prompt_tokens', 0),
                 'completion_tokens': usage.get('completion_tokens', 0),
                 'total_tokens': usage.get('total_tokens', 0),
                 'response_text': resp_text,
                 'execution_time_ms': elapsed_ms
             }
-            # Cache successful responses
-            self._prompt_cache[cache_key] = result_entry
-            return result_entry
         except Exception as e:
             if resp is not None:
                 try:
@@ -397,7 +373,7 @@ class _Handler(BaseHTTPRequestHandler):
             traditional_tokens = {'prompt_tokens': prompt_words * 3, 'completion_tokens': prompt_words * 4, 'total_tokens': prompt_words * 7, 'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
             t_traditional = 2.0
 
-        # === TokenRelay: full v3 pipeline (with prompt caching) ===
+        # === TokenRelay: full v3 pipeline (no caching) ===
         relay_pipeline_info = {}
         try:
             pipeline_info = self._relay_pipeline(prompt)
@@ -432,6 +408,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Clean up large objects
         del compressed
+        gc.collect()
 
         prompt_words = len(prompt.split())
         relay_total_tokens = relay_tokens.get('total_tokens', 0)
@@ -474,6 +451,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Clean up
         del traditional_tokens, relay_tokens, relay_total_tokens, relay_resp_text, body
+        gc.collect()
 
     def _handle_prompt_benchmark_stream(self):
         """Handle prompt-based benchmark with progressive SSE streaming."""
@@ -519,11 +497,13 @@ class _Handler(BaseHTTPRequestHandler):
 
             # Clean up
             del pos_system, predictor, renderer, structure
+            gc.collect()
         except Exception as e:
             error_data = json.dumps({'event': 'error', 'message': str(e)})
             self.wfile.write(f"data: {error_data}\n\n".encode())
             self.wfile.flush()
             del error_data
+            gc.collect()
 
     def _handle_pipeline_details(self):
         """Show the full V3 pipeline execution details."""
@@ -542,6 +522,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Clean up POS objects
         del pos_system, predictor
+        gc.collect()
 
         # Run the full V3 pipeline
         pipeline_info = self._relay_pipeline(prompt)
@@ -595,9 +576,10 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Clean up
         del prediction, pipeline_info, body
+        gc.collect()
 
     def _handle_swarm_benchmark(self):
-        """Run benchmark with direct LLM comparison (swarm agents removed)."""
+        """Run benchmark with SwarmAgent parallel processing."""
         length = int(self.headers.get('Content-Length', 0))
         data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
         prompt = data.get('prompt', 'What is the capital of France?')
@@ -607,15 +589,59 @@ class _Handler(BaseHTTPRequestHandler):
             api_key = os.environ.get('OPENROUTER_API_KEY', '')
         url = os.environ.get('OPENROUTER_API_URL', 'http://localhost:20128/v1/chat/completions')
 
+        # Lazy-load swarm modules inside method
+        swarm_mod = _get_swarm()
+        SwarmAgent = swarm_mod.SwarmAgent
+        SwarmCoordinator = swarm_mod.SwarmCoordinator
+        sl_mod = _get_selflearning()
+        ReinforcementLearner = sl_mod.ReinforcementLearner
+        AdaptiveTokenAllocator = sl_mod.AdaptiveTokenAllocator
+
         t0 = time.perf_counter()
 
-        # Traditional LLM call (no swarm agents created per-request)
+        # Initialize swarm coordinator with multiple agents
+        coordinator = SwarmCoordinator()
+        learner = ReinforcementLearner()
+        allocator = AdaptiveTokenAllocator(learning_rate=0.1)
+
+        # Create specialist agents
+        agent_code = SwarmAgent("code_agent", "code")
+        agent_design = SwarmAgent("design_agent", "design")
+        agent_review = SwarmAgent("review_agent", "review")
+
+        # Add agents to coordinator
+        coordinator.add_agent(agent_code)
+        coordinator.add_agent(agent_design)
+        coordinator.add_agent(agent_review)
+
+        # Run parallel processing through swarm
+        swarm_result = coordinator.coordinate(prompt)
+
+        # Use the best agent's output
+        best_output = swarm_result.get('best_output', swarm_result.get('merged_output', ''))
+
+        # Call LLM with the swarm-optimized prompt
+        if best_output and len(best_output) > 10:
+            final_prompt = f"{prompt}\n\nOptimize this implementation: {best_output}"
+        else:
+            final_prompt = prompt
+
+        # Traditional LLM call
         traditional_tokens = self._call_llm(prompt, api_key, url)
         t_trad = time.perf_counter() - t0
 
-        # Relay LLM call
-        relay_tokens = self._call_llm(prompt, api_key, url)
+        # Relay LLM call with swarm optimization
+        relay_tokens = self._call_llm(final_prompt, api_key, url)
         t_rel = time.perf_counter() - t0
+
+        # Learn from this interaction
+        learner.record(prompt, traditional_tokens['total_tokens'], relay_tokens['total_tokens'],
+                       t_trad, t_rel, strategy='swarm')
+
+        # Clean up heavy objects
+        del coordinator, learner, allocator, agent_code, agent_design, agent_review
+        del swarm_result, best_output, final_prompt
+        gc.collect()
 
         prompt_words = len(prompt.split())
         trad_resp = traditional_tokens.get('response_text', '')
@@ -631,10 +657,10 @@ class _Handler(BaseHTTPRequestHandler):
             "traditional": {**traditional_tokens, "response_text": trad_resp},
             "token_relay": {**relay_tokens, "response_text": relay_resp},
             "swarm": {
-                "agents": 0,
-                "best_strategy": "removed",
-                "coordination_time_ms": 0,
-                "agents_used": []
+                "agents": len(coordinator.agents),
+                "best_strategy": swarm_result.get('best_strategy', 'unknown'),
+                "coordination_time_ms": round(swarm_result.get('coordination_time_ms', 0), 2),
+                "agents_used": [a.role for a in coordinator.agents]
             },
             "comparison": {
                 "traditional_tokens": traditional_tokens['total_tokens'],
@@ -649,7 +675,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "both_produce_code": t_html and r_html
             },
             "pipeline": "swarm",
-            "learner": {"episodes": 0, "total_savings": 0}
+            "learner": {"episodes": learner._metrics.total_episodes, "total_savings": round(learner._metrics.total_tokens_saved, 2)}
         })
 
         # Clean up before sending
@@ -661,6 +687,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode())
 
         del body
+        gc.collect()
 
     def do_POST(self):
         try:
@@ -725,6 +752,7 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             # Memory enforcement after every POST request
             self._app._check_memory()
+            gc.collect()
 
     def log_message(self, format, *args): pass
 

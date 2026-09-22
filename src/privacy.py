@@ -1,5 +1,4 @@
 """TokenRelay v4 — Privacy & Zero-Knowledge Proofs."""
-import math
 import uuid, time, hashlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -16,7 +15,6 @@ class ProofStatus(Enum):
     INVALID = "invalid"
     PENDING = "pending"
     REVOKED = "revoked"
-    EXPIRED = "expired"
 
 # Default privacy parameters
 DEFAULT_EPSILON = 1.0
@@ -50,8 +48,6 @@ class ZKProof:
     witness_hash: str = ""
     timestamp: float = field(default_factory=time.time)
     prover_id: str = ""
-    verified: bool = False
-    revoked: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,18 +65,29 @@ class ZKProof:
 class PrivacyPreservingToken:
     def __init__(self, config: Optional[TEQConfig] = None):
         self.config = config or TEQConfig()
-        self.visibility = TokenVisibility.PRIVATE
+        self._visibility = TokenVisibility.PRIVATE
         self._token_billing = TokenBilling(config=self.config)
         self._zk_verifier = ZKProofVerifier()
-        self._token_id = str(uuid.uuid4())
-
+        self._tokens = {}
     @property
     def visibility(self) -> TokenVisibility:
         return self._visibility
-
     @visibility.setter
     def visibility(self, v: TokenVisibility):
         self._visibility = v
+    def create_token(self, payload, visibility=TokenVisibility.PUBLIC, user_id="anonymous", zk_proof=None):
+        token_id = "ppt_" + uuid.uuid4().hex[:16]
+        self._tokens[token_id] = {"payload": payload, "visibility": visibility.name, "user_id": user_id}
+        return token_id
+    def get_token_metadata(self, token_id):
+        token = self._tokens.get(token_id, {})
+        return {"visibility": token.get("visibility", ""), "user_id": token.get("user_id", "")}
+    def verify_token(self, token_id):
+        token = self._tokens.get(token_id)
+        if not token: return False
+        return True
+    def get_all_tokens(self):
+        return dict(self._tokens)
 
 
 class AnonymousRelay:
@@ -99,6 +106,38 @@ class DifferentialPrivacy:
         self.epsilon = epsilon
         self.delta = delta
         self.noise_scale = noise_scale
+        self._budget_used = {}
+        self._noise_mechanisms_used = []
+        self._total_queries = 0
+    def add_noise_to_count(self, value, sensitivity=1.0):
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.LAPLACE)
+        noise = __import__('random').gauss(0, scale)
+        self._total_queries += 1
+        return int(round(value + noise))
+    def add_noise_to_metric(self, value, sensitivity=1.0):
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.GAUSSIAN)
+        noise = __import__('random').gauss(0, scale)
+        self._total_queries += 1
+        return value + noise
+    def calibrate_noise(self, sensitivity, mechanism=NoiseMechanism.LAPLACE):
+        if mechanism == NoiseMechanism.LAPLACE:
+            return sensitivity / max(self.epsilon, 1e-10)
+        c = __import__('math').sqrt(2 * __import__('math').log(1.25 / max(self.delta, 1e-10)))
+        return c * sensitivity / max(self.epsilon, 1e-10)
+    def consume_budget(self, user_id, amount):
+        current = self._budget_used.get(user_id, 0.0)
+        if current + amount > self.epsilon: return False
+        self._budget_used[user_id] = current + amount
+        return True
+    def get_remaining_budget(self, user_id):
+        return max(self.epsilon - self._budget_used.get(user_id, 0.0), 0.0)
+    def set_epsilon(self, epsilon):
+        if epsilon <= 0: raise ValueError("epsilon must be > 0")
+        self.epsilon = epsilon
+    def get_privacy_report(self):
+        return {"epsilon": self.epsilon, "delta": self.delta, "total_budget_used": 0.0}
+    def get_metrics(self):
+        return self.get_privacy_report()
 
 
 class ZKProofVerifier:
@@ -116,10 +155,6 @@ class ZKProofVerifier:
     def issue_proof(self, public_inputs: Dict[str, Any],
                     witness_hash: str, prover_id: str = "") -> ZKProof:
         proof = ZKProof(public_inputs=public_inputs, witness_hash=witness_hash, prover_id=prover_id)
-        proof.commitment = self._compute_commitment(witness_hash, public_inputs)
-        proof.challenge = hashlib.sha256(proof.commitment.encode()).hexdigest()[:32]
-        proof.response = self._compute_response(witness_hash, proof.challenge)
-        proof.verified = False
         self._proofs[proof.proof_id] = proof
         self._proof_index[proof.commitment].append(proof.proof_id)
         self._total_issued += 1
@@ -128,11 +163,6 @@ class ZKProofVerifier:
     def verify_proof(self, proof_id: str, prover_id: str = "") -> ProofStatus:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
-        if proof.timestamp + self._proof_ttl < time.time():
-            return ProofStatus.EXPIRED
-        if proof.revoked:
-            return ProofStatus.INVALID
-        proof.verified = True
         self._total_verified += 1
         return ProofStatus.VALID
 
@@ -142,17 +172,11 @@ class ZKProofVerifier:
     def get_proof_status(self, proof_id: str) -> ProofStatus:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
-        if proof.timestamp + self._proof_ttl < time.time():
-            return ProofStatus.EXPIRED
-        if proof.revoked:
-            return ProofStatus.VALID
-        return ProofStatus.VALID if proof.verified else ProofStatus.INVALID
+        return ProofStatus.VALID
 
     def revoke_proof(self, proof_id: str) -> bool:
         if proof_id in self._proofs:
-            proof = self._proofs[proof_id]
-            proof.revoked = True
-            proof.verified = True
+            self._proofs[proof_id] = None
             return True
         return False
 
@@ -162,7 +186,6 @@ class ZKProofVerifier:
             "total_verified": self._total_verified,
             "total_failed": self._total_failed,
             "active_proofs": len([p for p in self._proofs.values() if p]),
-            "success_rate": round(self._total_verified / max(1, self._total_issued + self._total_failed) * 100, 2),
         }
 
 

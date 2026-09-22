@@ -77,7 +77,7 @@ class SwarmAgent:
     def remove_neighbor(self,agent_id):
         if agent_id in self.neighbors: self.neighbors.remove(agent_id)
     def assign_task(self, task): self.task_queue.append(task); task.assigned_agent = self.agent_id; return True
-    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.value.upper(),"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
+    def heartbeat(self): self.update_heartbeat(); return {"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"task_count":self.task_count,"health_score":self.health_score,"timestamp":time.time()}
     def serialize_state(self):
         import json
         state={"agent_id":self.agent_id,"role":self.role.value,"state":self.state.value,"capability_vector":self.capability_vector.to_dict(),"task_count":self.task_count,"completed":len(self.completed_tasks),"failed":len(self.failed_tasks)}
@@ -188,7 +188,7 @@ class SwarmCoordinator:
 
 class CollectiveDecision:
     def __init__(self,coordinator,config=None):
-        self.coordinator=coordinator; self.config=config or SwarmConfig(); self.votes={}; self.consensus_reached=False; self.decisions=[]
+        self.coordinator=coordinator; self.config=config or SwarmConfig(); self.votes={}; self._proposal_ids=set(); self.consensus_reached=False; self.decisions=[]
     def vote(self, proposal_id, vote=True, weight=1.0):
         pid = str(proposal_id) if not isinstance(proposal_id, str) else proposal_id
         if pid not in self.votes: self.votes[pid]=[]
@@ -199,13 +199,17 @@ class CollectiveDecision:
         return ConsensusResult(pid, reached, self.votes[pid], "ok", winner=("a" if yes_weight>total_weight-yes_weight else "b") if reached else None, unanimous=(yes_weight==total_weight))
     def create_proposal(self, description, proposal_id=None):
         proposal_id = proposal_id or str(uuid.uuid4())
-        if proposal_id not in self.votes: self.votes[proposal_id] = []
+        if proposal_id not in self._proposal_ids:
+            self._proposal_ids.add(proposal_id)
+            self.votes[proposal_id] = []
         self.decisions.append({"proposal_id": proposal_id, "description": description, "status": "active"})
         return {"proposal_id": proposal_id, "status": "active"}
     def to_dict(self):
         return {"total_proposals": len(self.decisions), "total_consensus_results": len(self.votes), "votes": len(self.votes), "consensus_reached": self.consensus_reached, "decisions": len(self.decisions)}
     def cast_vote(self,agent_id,proposal_id,vote,reasoning=""):
         pid = str(proposal_id) if not isinstance(proposal_id, str) else proposal_id
+        if pid not in self._proposal_ids:
+            raise ConsensusError(f"Proposal {proposal_id} not found")
         if pid not in self.votes:
             raise ConsensusError(f"Proposal {proposal_id} not found")
         for v in self.votes[pid]:
@@ -217,7 +221,7 @@ class CollectiveDecision:
         reached=yes_weight>=total_weight and total_weight>0
         return ConsensusResult(pid, reached, self.votes[pid], "ok", winner=("a" if yes_weight>total_weight-yes_weight else "b") if reached else None, unanimous=(yes_weight==total_weight))
     def reach_consensus(self,proposal_id):
-        if proposal_id not in self.votes: return ConsensusResult(proposal_id, False, [], "No votes")
+        if proposal_id not in self._proposal_ids or not self.votes[proposal_id]: return ConsensusResult(proposal_id, False, [], "No votes")
         votes=self.votes[proposal_id]; total_weight=sum(v["weight"] for v in votes); yes_weight=sum(v["weight"] for v in votes if v["vote"])
         self.consensus_reached=(yes_weight/max(1,total_weight))>=self.config.consensus_threshold; return ConsensusResult(proposal_id, reached, votes, "ok", unanimous=(yes_weight==total_weight))
 

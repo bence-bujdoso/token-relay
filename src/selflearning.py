@@ -1,4 +1,4 @@
-"""TokenRelay v4 — Cross-Protocol Interoperability."""
+"""TokenRelay v4 — Self-Learning & Adaptive Optimization."""
 import uuid, time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -7,448 +7,332 @@ from collections import defaultdict
 
 from broker import MessageBroker
 from circuit_breaker import CircuitBreaker
-from brp import BRPConfig, ChannelManager, ChannelPriority
-from teq import TokenBilling, TEQConfig
-from car import CARRouter
 from codec import compress_message, decompress_message
 from streaming import EventBus
+from brp import BRPConfig
+from teq import TokenBilling, TEQConfig
+from epc import EdgeCache
+from atc import IntentClassifier
 
 
-class TranslationError(Exception):
-    """Translation error."""
-    pass
+class LearningState(Enum):
+    EXPLORATION = "exploration"
+    EXPLOITATION = "exploitation"
+    CONVERGED = "converged"
+    DECAYING = "decaying"
 
+class CompressionAction(Enum):
+    NONE = "none"
+    LIGHT = "light"
+    MODERATE = "moderate"
+    HEAVY = "heavy"
+    AGGRESSIVE = "aggressive"
 
-class ProtocolType(Enum):
-    HTTP_REST = "http_rest"
-    GRPC = "grpc"
-    MQTT = "mqtt"
-    WEBSOCKET = "websocket"
-    SSE = "sse"
-    NATS = "nats"
-    AMQP = "amqp"
-    KAFKA = "kafka"
-
-class AdapterState(Enum):
-    REGISTERED = "registered"
-    CONNECTED = "connected"
-    ACTIVE = "active"
-    PAUSED = "paused"
-    DISCONNECTED = "disconnected"
-    ERROR = "error"
-
-class TranslationFormat(Enum):
-    JSON = "json"
-    PROTOBUF = "protobuf"
-    XML = "xml"
-    YAML = "yaml"
-    BINARY = "binary"
-    CBOR = "cbor"
-    MESSAGE_PACK = "msgpack"
-
-class BridgeState(Enum):
-    CONNECTED = "connected"
-    PAUSED = "paused"
-    DISCONNECTED = "disconnected"
-    ERROR = "error"
+class RewardSignal(Enum):
+    THROUGHPUT = "throughput"
+    LATENCY = "latency"
+    QUALITY = "quality"
+    EFFICIENCY = "efficiency"
+    OVERALL = "overall"
 
 
 @dataclass
-class AdapterConfig:
-    protocol_type: ProtocolType
-    endpoint: str
-    format: TranslationFormat = TranslationFormat.JSON
-    priority: int = 5
-    qos_tier: str = "silver"
-    max_message_size: int = 65536
-    heartbeat_interval: int = 30
-    auth_token: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def __init__(self, protocol_type: ProtocolType = ProtocolType.HTTP_REST,
-                 endpoint: str = ""):
-        self.protocol_type = protocol_type
-        self.endpoint = endpoint
+class SLConfig:
+    learning_rate: float = 0.1
+    discount_factor: float = 0.95
+    gamma: float = 0.95
+    epsilon: float = 0.1
+    max_episodes: int = 1000
+    max_steps: int = 100
+    reward_decay: float = 0.99
+    exploration_decay: float = 0.995
+    min_epsilon: float = 0.01
+    batch_size: int = 32
+    memory_size: int = 10_000
+    hidden_dim: int = 128
 
 
 @dataclass
-class ExternalAdapter:
-    adapter_id: str
-    config: AdapterConfig
-    state: AdapterState = AdapterState.REGISTERED
-    last_activity: float = field(default_factory=time.time)
-    message_count: int = 0
-    error_count: int = 0
-    connected_at: float = 0.0
+class AgentPairStats:
+    agent_a: str
+    agent_b: str
+    total_interactions: int = 0
+    total_latency: float = 0.0
+    total_tokens_saved: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    avg_latency: float = 0.0
+    avg_tokens_saved: float = 0.0
+    success_rate: float = 0.0
 
-    def connect(self) -> bool:
-        self.state = AdapterState.CONNECTED
-        self.connected_at = time.time()
-        return True
-
-    def disconnect(self) -> bool:
-        self.state = AdapterState.DISCONNECTED
-        return True
-
-    def pause(self) -> bool:
-        self.state = AdapterState.ERROR
-        return True
-
-    def resume(self) -> bool:
-        self.state = AdapterState.CONNECTED
-        return True
-
-    def record_error(self) -> None:
-        self.error_count += 1
-        self.last_activity = time.time()
-
-    def record_message(self) -> None:
-        self.message_count += 1
-        self.last_activity = time.time()
+    def record(self, latency: float, tokens_saved: int, success: bool):
+        self.total_interactions += 1
+        self.total_latency += latency
+        self.total_tokens_saved += tokens_saved
+        if success:
+            self.success_count += 1
+        else:
+            self.failure_count += 1
+        self.avg_latency = self.total_latency / self.total_interactions
+        self.avg_tokens_saved = self.total_tokens_saved / self.total_interactions
+        self.success_rate = self.success_count / max(1, self.total_interactions)
 
 
-class InteropError(Exception): pass
-class AdapterNotFoundError(InteropError): pass
-class ProtocolNotSupportedError(InteropError): pass
-class TranslationError(InteropError): pass
+@dataclass
+class LearningEpisode:
+    episode_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    steps: int = 0
+    total_reward: float = 0.0
+    start_time: float = field(default_factory=time.time)
+    end_time: Optional[float] = None
+    actions: List[str] = field(default_factory=list)
+    rewards: List[float] = field(default_factory=list)
 
 
-class AdapterRegistry:
-    def __init__(self, teq_billing: Optional[TokenBilling] = None):
-        self._adapters: Dict[str, ExternalAdapter] = {}
-        self._protocol_index: Dict[ProtocolType, List[str]] = defaultdict(list)
-        self._teq_billing = teq_billing or TokenBilling()
+class ReinforcementLearner:
+    def __init__(self, config: Optional[SLConfig] = None):
+        self.config = config or SLConfig()
+        self._q_table: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        self._metrics = type('Metrics', (), {'total_episodes': 0, 'total_steps': 0})()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
-
-
-    def register_adapter(self, adapter=None, **kwargs) -> str:
-        """Register an external adapter."""
-        if kwargs:
-            config = AdapterConfig(**kwargs)
-            adapter = ExternalAdapter(adapter_id=str(uuid.uuid4())[:8], config=config)
-        if adapter.adapter_id in self._adapters:
-            raise ValueError(f"Adapter {adapter.adapter_id} already registered")
-        self._adapters[adapter.adapter_id] = adapter
-        self._protocol_index[adapter.config.protocol_type].append(adapter.adapter_id)
-        return adapter.adapter_id
-
-    def connect_adapter(self, adapter_id: str) -> bool:
-        """Connect an adapter."""
-        adapter = self._adapters.get(adapter_id)
-        if adapter:
-            return adapter.connect()
-        return False
-
-    def disconnect_adapter(self, adapter_id: str) -> bool:
-        """Disconnect an adapter."""
-        adapter = self._adapters.get(adapter_id)
-        if adapter:
-            return adapter.disconnect()
-        return False
-
-    def pause_adapter(self, adapter_id: str) -> bool:
-        """Pause an adapter."""
-        adapter = self._adapters.get(adapter_id)
-        if adapter:
-            return adapter.pause()
-        return False
-
-    def resume_adapter(self, adapter_id: str) -> bool:
-        """Resume an adapter."""
-        adapter = self._adapters.get(adapter_id)
-        if adapter:
-            return adapter.resume()
-        return False
-
-    def unregister_adapter(self, adapter_id: str) -> bool:
-        """Unregister an adapter."""
-        if adapter_id in self._adapters:
-            del self._adapters[adapter_id]
-            for ids in self._protocol_index.values():
-                if adapter_id in ids:
-                    ids.remove(adapter_id)
-            return True
-        return False
-
-    def get_adapter(self, adapter_id: str) -> Optional[ExternalAdapter]:
-        """Get adapter by ID."""
-        return self._adapters.get(adapter_id)
-
-    def get_adapters(self) -> list:
-        """Get all adapters."""
-        return list(self._adapters.values())
-
-    def get_adapters_by_protocol(self, protocol_type: ProtocolType) -> list:
-        """Get all adapters for a protocol type."""
-        ids = self._protocol_index.get(protocol_type, [])
-        return [self._adapters[aid] for aid in ids if aid in self._adapters]
-
-    def get_adapter_stats(self, adapter_id: str) -> dict:
-        """Get adapter statistics."""
-        adapter = self._adapters.get(adapter_id)
-        if adapter:
-            return {"messages": adapter.message_count, "errors": adapter.error_count,
-                    "state": adapter.state.name, "last_activity": adapter.last_activity}
-        return {}
-
-    def get_stats(self) -> Dict[str, Any]:
-        return {"total_adapters": len(self._adapters),
-                "total_messages": sum(a.message_count for a in self._adapters.values()),
-                "total_errors": sum(a.error_count for a in self._adapters.values())}
-
-
-class TranslationRule:
-    def __init__(self, source_format: TranslationFormat = TranslationFormat.JSON,
-                 target_format: TranslationFormat = TranslationFormat.PROTOBUF,
-                 source_protocol: ProtocolType = ProtocolType.HTTP_REST,
-                 target_protocol: ProtocolType = ProtocolType.MQTT,
-                 field_mappings: Optional[Dict[str, str]] = None,
-                 default_values: Optional[Dict[str, Any]] = None,
-                 priority: int = 5):
-        self.source_format = source_format if isinstance(source_format, TranslationFormat) else TranslationFormat(source_format)
-        self.target_format = target_format if isinstance(target_format, TranslationFormat) else TranslationFormat(target_format)
-        self.source_protocol = source_protocol
-        self.target_protocol = target_protocol
-        self.field_mappings = field_mappings or {}
-        self.default_values = default_values or {}
-        self.priority = priority
-
-    def apply(self, message: dict) -> dict:
-        result = dict(message)
-        for src, tgt in self.field_mappings.items():
-            if src in result:
-                result[tgt] = result.pop(src)
-        result.update(self.default_values)
-        return result
-
-
-class ProtocolBridge:
-    def __init__(self, config: Optional[BridgeConfig] = None,
-                 adapter_registry: Optional[AdapterRegistry] = None,
-                 car_router: Optional[CARRouter] = None,
-                 teq_billing: Optional[TokenBilling] = None):
-        self.config = config or BridgeConfig()
-        self._registry = adapter_registry or AdapterRegistry()
-        self._car_router = car_router or CARRouter()
-        self._teq_billing = teq_billing or TokenBilling()
-        self._state = BridgeState.DISCONNECTED
         self._event_bus = EventBus()
+
+    def choose_action(self, state: str) -> str:
+        actions = self._q_table.get(state, {})
+        if not actions: return "a0"
+        return max(actions, key=actions.get)
+
+    def learn(self, state: str, action: str, reward: float, next_state: str):
+        self._q_table[state][action] += self.config.learning_rate * (
+            reward + self.config.discount_factor * max(
+                self._q_table[next_state].values(), default=0) - self._q_table[state][action])
+        self._metrics.total_steps += 1
+
+    def get_q_value(self, state: str, action: str) -> float:
+        return self._q_table[state].get(action, 0.0)
+
+    def set_q_value(self, state: str, action: str, value: float):
+        self._q_table[state][action] = value
+
+    def get_optimal_policy(self, state: str) -> List[str]:
+        if state not in self._q_table: return []
+        max_q = max(self._q_table[state].values())
+        return [a for a, q in self._q_table[state].items() if q == max_q]
+
+    def q_table_size(self) -> int:
+        return sum(len(v) for v in self._q_table.values())
+
+    def reset(self):
+        self._q_table.clear()
+        self._metrics.total_episodes = 0
+        self._metrics.total_steps = 0
+
+    def adapt_strategy(self) -> bool:
+        return self._metrics.total_episodes > 10
+
+    def adapt_compression(self, pair_id: str) -> float:
+        return self.config.learning_rate
+
+    def run_episode(self, get_state, max_steps: int = 10) -> LearningEpisode:
+        ep = LearningEpisode()
+        state = get_state()
+        for _ in range(max_steps):
+            action = self.choose_action(state)
+            reward = 1.0 if action else 0.0
+            next_state = get_state()
+            self.learn(state, action, reward, next_state)
+            ep.actions.append(action)
+            ep.rewards.append(reward)
+            state = next_state
+            ep.steps += 1
+            ep.total_reward += reward
+        ep.end_time = time.time()
+        self._metrics.total_episodes += 1
+        return ep
+
+    def get_metrics(self):
+        return self._metrics
+
+
+class AdaptiveTokenAllocator:
+    def __init__(self, config: Optional[SLConfig] = None):
+        self.config = config or SLConfig()
+        self._q_table: Dict[str, float] = defaultdict(float)
+
+    def allocate(self, agent_a: str, agent_b: str, intent: Optional[str] = None) -> float:
+        key = f"{agent_a}_{agent_b}"
+        return self._q_table.get(key, 0.5)
+
+    def get_optimal_compression(self, pair_id: str) -> float:
+        return self._q_table.get(pair_id, 0.5)
+
+
+class PerformanceTracker:
+    def __init__(self, config=None, cache=None):
+        self.config = config or SLConfig()
+        self._stats = {}
+        self._cache = cache or EdgeCache(node_id="perf_tracker")
         self._broker = MessageBroker()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
-
-    def initialize(self):
-        self._state = BridgeState.CONNECTED
-
-    def connect_external(self, protocol_type: ProtocolType,
-                         endpoint: str) -> bool:
-        self._state = BridgeState.CONNECTED
+    def record_interaction(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, tokens_original=0, compression_level=0.5):
+        key = f"{agent_a}_{agent_b}"
+        if key not in self._stats:
+            self._stats[key] = AgentPairStats(agent_a=agent_a, agent_b=agent_b)
+        self._stats[key].record(latency_ms, tokens_saved, success)
+        return {"pair_id": key, "success": success}
+    def get_stats(self, key):
+        return self._stats.get(key, AgentPairStats(agent_a=key, agent_b=""))
+    def get_all_pairs(self):
+        return dict(self._stats)
+    def get_aggregate_stats(self):
+        all_pairs = list(self._stats.values())
+        if not all_pairs:
+            return {"global_success_rate": 0.0, "total_interactions": 0, "total_pairs": 0}
+        total_success = sum(p.success_count for p in all_pairs)
+        total_fail = sum(p.failure_count for p in all_pairs)
+        total_inter = sum(p.total_interactions for p in all_pairs)
+        return {"global_success_rate": round(total_success / max(1, total_success + total_fail) * 100, 2),
+                "total_interactions": total_inter, "total_pairs": len(all_pairs)}
+    def adapt(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, intent=None):
+        key = f"{agent_a}_{agent_b}"
+        previous_level = self.allocate(agent_a, agent_b)
+        reward = 1.0 if success else -1.0
+        if latency_ms > 200: reward -= 0.5
+        if tokens_saved > 50: reward += 0.3
+        self.record_interaction(agent_a, agent_b, latency_ms, tokens_saved, success)
+        return {"pair_id": key, "reward": reward, "new_compression_level": self.allocate(agent_a, agent_b),
+                "previous_level": previous_level, "action_taken": "increase" if reward > 0 else "decrease", "success": success}
+    def _compute_reward(self, agent_a, agent_b, success):
+        return 1.0 if success else -1.0
+    def get_all_allocations(self):
+        return {k: v.compression_level for k, v in self._stats.items()}
+    def get_allocation(self, agent_a, agent_b):
+        key = f"{agent_a}_{agent_b}"
+        if key in self._stats: return self._stats[key].compression_level
+        return 0.5
+    def reset_allocation(self, agent_a, agent_b):
+        key = f"{agent_a}_{agent_b}"
+        if key in self._stats: del self._stats[key]
         return True
 
-    def disconnect_external(self, protocol_type: ProtocolType) -> bool:
-        self._state = BridgeState.DISCONNECTED
-        return True
-
-    def get_bridge_stats(self) -> Dict[str, Any]:
-        return {"total_forwarded": 0, "total_received": 0, "total_translated": 0,
-                "uptime_seconds": 0, "adapter_stats": {}, "state": self._state.value}
-
-    def pause(self):
-        self._state = BridgeState.PAUSED
-
-    def resume(self):
-        self._state = BridgeState.CONNECTED
-
+class AdaptiveTokenAllocator:
+    def __init__(self, config=None):
+        self.config = config or SLConfig()
+        self._q_table = defaultdict(float)
+        self._learner = ReinforcementLearner(config=config)
+        self._tracker = PerformanceTracker(config=config)
+        self._tracker._learner = self._learner
+    def allocate(self, agent_a, agent_b, intent=None):
+        key = f"{agent_a}_{agent_b}"
+        return self._q_table.get(key, 0.5)
+    def get_optimal_compression(self, pair_id):
+        return self._q_table.get(pair_id, 0.5)
+    def adapt(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, intent=None):
+        key = f"{agent_a}_{agent_b}"
+        previous_level = self.allocate(agent_a, agent_b)
+        reward = 1.0 if success else -1.0
+        if latency_ms > 200: reward -= 0.5
+        if tokens_saved > 50: reward += 0.3
+        self._learner.update_q_value(agent_a, agent_b, reward, key)
+        self._q_table[key] = self._learner.get_q_value(agent_a, agent_b)
+        self._tracker.record_interaction(agent_a, agent_b, latency_ms, tokens_saved, success)
+        self._learner._metrics.total_episodes += 1
+        self._learner._metrics.total_steps += 1
+        return {"pair_id": key, "reward": reward, "new_compression_level": self._q_table[key],
+                "previous_level": previous_level, "action_taken": "increase" if reward > 0 else "decrease", "success": success, "intent": intent or "unknown"}
+    def _compute_reward(self, success, latency_ms, tokens_saved):
+        reward = self.config.reward_success_weight if success else self.config.failure_penalty
+        reward += self.config.reward_latency_weight * max(0, 1.0 - latency_ms / 1000.0)
+        reward += self.config.reward_token_weight * min(tokens_saved / 100.0, 1.0)
+        if latency_ms > 200: reward -= 0.5
+        return round(reward, 4)
     @property
-    def _state(self):
-        return self.__state
-
-    @_state.setter
-    def _state(self, value):
-        self.__state = value
-
-
-class BridgeConfig:
-    def __init__(self, max_adapters: int = 10, auto_reconnect: bool = True):
-        self.max_adapters = max_adapters
-        self.auto_reconnect = auto_reconnect
-        self.heartbeat_interval = 30
-        self.default_protocol = ProtocolType.HTTP_REST
-        self.bridge_port = 8766
-
-
-class GatewayConfig:
-    def __init__(self, port: int = 8766, host: str = "localhost"):
-        self.port = port
-        self.host = host
-        self.max_connections = 100
-        self.ssl_enabled = False
-        self.default_source_format = TranslationFormat.JSON
-
-
-class CrossProtocolGateway:
-    def __init__(self, config: Optional[GatewayConfig] = None,
-                 teq_billing: Optional[TokenBilling] = None,
-                 car_router: Optional[CARRouter] = None):
-        self.config = config or GatewayConfig()
-        self._teq_billing = teq_billing or TokenBilling()
-        self._car_router = car_router or CARRouter()
-        self._bridge = ProtocolBridge()
-        self._format_handlers = {
-            "json": lambda p: dict(p),
-            "protobuf": lambda p: dict(p),
-            "xml": lambda p: dict(p),
-            "yaml": lambda p: dict(p),
-            "binary": lambda p: dict(p),
-            "cbor": lambda p: dict(p),
-            "msgpack": lambda p: dict(p),
-        }
-
-    def translate(self, token_id: str, payload: dict,
-                  source_format: TranslationFormat, target_format: TranslationFormat,
-                  source_protocol: Optional[ProtocolType] = None,
-                  target_protocol: Optional[ProtocolType] = None) -> dict:
-        """Translate a payload from source to target format."""
-        src_str = source_format.value if isinstance(source_format, TranslationFormat) else source_format
-        tgt_str = target_format.value if isinstance(target_format, TranslationFormat) else target_format
-        if src_str not in self._format_handlers:
-            raise TranslationError(f"Unsupported source format: {source_format}")
-        if tgt_str not in self._format_handlers:
-            raise TranslationError(f"Unsupported target format: {target_format}")
-        result = self._format_handlers[tgt_str](payload)
-        return {
-            "original_token_id": token_id,
-            "converted_payload": result,
-            "source_format": src_str,
-            "target_format": tgt_str,
-            "status": "success",
-        }
-
-    def batch_translate(self, token_ids: list, payloads: list,
-                        source_format: TranslationFormat, target_format: TranslationFormat) -> list:
-        """Batch translate multiple payloads."""
-        return [self.translate(tid, payload, source_format, target_format)
-                for tid, payload in zip(token_ids, payloads)]
-
-
-class UniversalTranslator:
-    def __init__(self, teq_billing: Optional[TokenBilling] = None,
-                 car_router: Optional[CARRouter] = None,
-                 brp_server: Optional[Any] = None):
-        self._teq_billing = teq_billing or TokenBilling()
-        self._car_router = car_router or CARRouter()
-        self._brp_server = brp_server
-        self._rules: List[TranslationRule] = []
-        # Add default translation rules
-        self._rules.append(TranslationRule(
-            source_format=TranslationFormat.JSON,
-            target_format=TranslationFormat.YAML,
-            priority=5,
-        ))
-        self._rules.append(TranslationRule(
-            source_format=TranslationFormat.PROTOBUF,
-            target_format=TranslationFormat.JSON,
-            priority=5,
-        ))
-        self._format_handlers = {
-            "json": lambda p: dict(p),
-            "protobuf": lambda p: dict(p),
-            "xml": lambda p: dict(p),
-            "yaml": lambda p: dict(p),
-            "binary": lambda p: dict(p),
-            "cbor": lambda p: dict(p),
-            "msgpack": lambda p: dict(p),
-        }
-
-    def convert(self, message: dict, source_format: TranslationFormat,
-                target_format: TranslationFormat) -> dict:
-        """Convert a message from source to target format."""
-        src_str = source_format.value if isinstance(source_format, TranslationFormat) else source_format
-        tgt_str = target_format.value if isinstance(target_format, TranslationFormat) else target_format
-        result = dict(message)
-        for rule in self._rules:
-            if rule.source_format.value == src_str and rule.target_format.value == tgt_str:
-                for src, tgt in rule.field_mappings.items():
-                    if src in result:
-                        result[tgt] = result.pop(src)
-                result.update(rule.default_values)
-                result["_target_format"] = tgt_str
-                # Apply field_mappings from TranslationRule
-                if hasattr(rule, 'field_mappings') and rule.field_mappings:
-                    for src_key, tgt_key in rule.field_mappings.items():
-                        if src_key in result:
-                            result[tgt_key] = result.pop(src_key)
-                if "token_id" not in result and "id" in result:
-                    result["token_id"] = result.get("id", result.get("token_id", ""))
-                return result
-        if src_str in self._format_handlers and tgt_str in self._format_handlers:
-            result = self._format_handlers[tgt_str](result)
-            result["_target_format"] = tgt_str
-        return result
-
-    def convert_batch(self, messages: list, source_format: TranslationFormat,
-                      target_format: TranslationFormat) -> list:
-        """Batch convert multiple messages."""
-        return [self.convert(msg, source_format, target_format) for msg in messages]
-
-    def get_rules(self) -> List[TranslationRule]:
-        """Get all translation rules."""
-        return self._rules
-
-    def get_rule_count(self) -> int:
-        """Get number of translation rules."""
-        return len(self._rules)
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get translator statistics."""
-        return {"total_conversions": 0, "success_rate": 1.0, "rule_count": len(self._rules)}
-
-    def add_rule(self, rule: TranslationRule) -> bool:
-        """Add a translation rule."""
-        self._rules.append(rule)
+    def q_table_size(self):
+        return sum(len(v) for v in self._learner._q_table.values())
+    def get_allocation(self, agent_a, agent_b):
+        return self.allocate(agent_a, agent_b)
+    def reset_allocation(self, agent_a, agent_b):
+        key = f"{agent_a}_{agent_b}"
+        if key in self._q_table: del self._q_table[key]
         return True
 
-    def remove_rule(self, source_format: TranslationFormat, target_format: TranslationFormat) -> bool:
-        """Remove a translation rule."""
-        src_str = source_format.value if isinstance(source_format, TranslationFormat) else source_format
-        tgt_str = target_format.value if isinstance(target_format, TranslationFormat) else target_format
-        for i, rule in enumerate(self._rules):
-            if rule.source_format.value == src_str and rule.target_format.value == tgt_str:
-                self._rules.pop(i)
-                return True
-        return False
+class FeedbackLoop:
+    def __init__(self, config=None):
+        self.config = config or SLConfig()
+        self._tracker = PerformanceTracker(config=self.config)
+        self._learner = ReinforcementLearner(config=self.config)
+        self._event_bus = EventBus()
+        self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
+        self._breaker.name = "feedback_loop"
+        self._allocator = AdaptiveTokenAllocator(config=self.config)
+        self._tracker._learner = self._learner
+    def process_interaction(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, intent=None):
+        return self._allocator.adapt(agent_a, agent_b, latency_ms=latency_ms, tokens_saved=tokens_saved, success=success, intent=intent)
+    def get_feedback_quality(self, agent_a, agent_b):
+        stats = self._tracker.get_stats(f"{agent_a}_{agent_b}")
+        if stats.total_interactions == 0:
+            return {"quality": "insufficient_data", "score": 0.0, "pair_id": f"{agent_a}_{agent_b}", "interactions": 0}
+        return {"quality": "good", "score": stats.success_rate, "pair_id": f"{agent_a}_{agent_b}", "interactions": stats.total_interactions}
+    def run_episode(self, pair, episodes=10):
+        results = []
+        for _ in range(episodes):
+            ep = self._learner.run_episode(lambda p=pair: p)
+            results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
+        return {"episodes_run": len(results), "total_episodes": self._learner._metrics.total_episodes,
+                "final_exploration_rate": self.config.exploration_rate, "q_table_size": self._learner.q_table_size,
+                "is_converged": self._learner.adapt_strategy()}
+    def run_adaptation_cycle(self, pairs, cycles=1):
+        cycle_results = []
+        for cycle in range(cycles):
+            cycle_reward = 0.0
+            for pair in pairs:
+                parts = pair.split("::")
+                if len(parts) == 2:
+                    result = self._allocator.adapt(parts[0], parts[1], latency_ms=50.0, tokens_saved=100, success=True)
+                    cycle_reward += result["reward"]
+            cycle_results.append({"cycle": cycle, "reward": cycle_reward})
+        return {"cycles_completed": cycles, "aggregate_reward": sum(c["reward"] for c in cycle_results), "cycle_results": cycle_results}
+    def get_adaptation_summary(self):
+        tracked_pairs = len(self._tracker.get_all_pairs())
+        q_size = self._learner.q_table_size
+        return {"total_episodes": self._learner._metrics.total_episodes, "exploration_rate": self.config.exploration_rate,
+                "is_converged": self._learner.adapt_strategy(), "q_table_size": q_size,
+                "breaker_state": self._breaker.state, "tracked_pairs": tracked_pairs,
+                "aggregate_stats": self._tracker.get_aggregate_stats()}
+    def reset(self):
+        self._learner.reset()
+        self._tracker = PerformanceTracker(config=self.config)
+        self._tracker._learner = self._learner
+        self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
+        self._breaker.name = "feedback_loop"
+        self._allocator = AdaptiveTokenAllocator(config=self.config)
+        self._allocator._tracker = self._tracker
+        self._tracker._learner = self._learner
+
+class SLBundle:
+    def __init__(self, config: Optional[SLConfig] = None,
+                 learner: Optional[ReinforcementLearner] = None,
+                 allocator: Optional[AdaptiveTokenAllocator] = None,
+                 tracker: Optional[PerformanceTracker] = None,
+                 classifier: Optional[IntentClassifier] = None):
+        self.config = config or SLConfig()
+        self.learner = learner or ReinforcementLearner(config=self.config)
+        self.allocator = allocator or AdaptiveTokenAllocator(config=self.config)
+        self.tracker = tracker or PerformanceTracker(config=self.config)
+        self.classifier = classifier
 
 
-class InteropBRPServer:
-    def __init__(self, port: int = 8766,
-                 teq_billing: Optional[TokenBilling] = None,
-                 gateway: Optional[CrossProtocolGateway] = None):
-        self.port = port
-        self._teq_billing = teq_billing or TokenBilling()
-        self._gateway = gateway
+def create_learner(config: Optional[SLConfig] = None) -> ReinforcementLearner:
+    return ReinforcementLearner(config=config)
 
+def create_allocator(config: Optional[SLConfig] = None) -> AdaptiveTokenAllocator:
+    return AdaptiveTokenAllocator(config=config)
 
-def create_protocol_bridge() -> ProtocolBridge:
-    return ProtocolBridge()
+def create_tracker(config: Optional[SLConfig] = None) -> PerformanceTracker:
+    return PerformanceTracker(config=config)
 
-def create_cross_protocol_gateway() -> CrossProtocolGateway:
-    return CrossProtocolGateway()
+def create_feedback_loop(config: Optional[SLConfig] = None) -> FeedbackLoop:
+    return FeedbackLoop(config=config)
 
-def create_universal_translator() -> UniversalTranslator:
-    return UniversalTranslator()
-
-def create_interop_stack() -> Dict[str, Any]:
-    """Create a complete interop stack with all components."""
-    teq = TokenBilling()
-    bridge = ProtocolBridge()
-    gateway = CrossProtocolGateway()
-    translator = UniversalTranslator()
-    registry = AdapterRegistry(teq_billing=teq)
-    router = CARRouter()
-    return {
-        "bridge": bridge,
-        "cross_protocol_gateway": gateway,
-        "universal_translator": translator,
-        "adapter_registry": registry,
-        "teq_billing": teq,
-        "car_router": router,
-    }
+def create_sl_bundle(config: Optional[SLConfig] = None) -> SLBundle:
+    return SLBundle(config=config)
