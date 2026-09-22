@@ -165,6 +165,7 @@ class SwarmCoordinator:
         leaders = [a for a in available if a.role in (AgentRole.LEADER, AgentRole.COORDINATOR)]
         return leaders[0] if leaders else available[0] if available else None
     def get_capable_agents(self,capability): return [a for a in self.agents.values() if capability in (a.capability_vector.capabilities or [])]
+    def get_active_agents(self): return [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
     def get_status(self):
         return AgentState.ACTIVE if self.agents else AgentState.OFFLINE
     def get_metrics(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry)}
@@ -206,16 +207,14 @@ class CollectiveDecision:
         return {"proposal_id": proposal_id, "status": "active"}
     def to_dict(self):
         return {"total_proposals": len(self.decisions), "total_consensus_results": len(self.votes), "votes": len(self.votes), "consensus_reached": self.consensus_reached, "decisions": len(self.decisions)}
-    def cast_vote(self,agent_id,proposal_id,vote,reasoning=""):
+    def cast_vote(self,agent_id,proposal_id,vote,reasoning="",weight=1.0):
         pid = str(proposal_id) if not isinstance(proposal_id, str) else proposal_id
         if pid not in self._proposal_ids:
-            raise ConsensusError(f"Proposal {proposal_id} not found")
-        if pid not in self.votes:
             raise ConsensusError(f"Proposal {proposal_id} not found")
         for v in self.votes[pid]:
             if v.get("voter") == agent_id:
                 raise ConsensusError(f"Duplicate vote for proposal {proposal_id}")
-        self.votes[pid].append({"vote":vote,"weight":1.0,"voter":agent_id,"reasoning":reasoning})
+        self.votes[pid].append({"vote":vote,"weight":weight,"voter":agent_id,"reasoning":reasoning})
         total_weight=sum(v["weight"] for v in self.votes[pid])
         yes_weight=sum(v["weight"] for v in self.votes[pid] if v["vote"])
         reached=yes_weight>=total_weight and total_weight>0
@@ -251,6 +250,10 @@ class ConsensusResult:
         self.winner = winner
         self.total_weight = total_weight
         self.unanimous = unanimous
+        self.approved = reached
+        self.total_votes = len(votes) if votes else 0
+        self.approval_count = sum(1 for v in votes if v.get("vote")) if votes else 0
+        self.weight = total_weight
 
 class SwarmError(Exception): pass
 class AgentNotFoundError(SwarmError): pass
@@ -262,9 +265,11 @@ class SelfOrganization:
     def __init__(self, coordinator, config=None):
         self.coordinator = coordinator
         self.config = config or SwarmConfig()
+        self.strategy = OrganizationStrategy.HYBRID
         self.clusters = []
         self.anomalies = []
         self.adaptations = []
+        self.agent_clusters = {}
         self.agent_clusters = {}
     
     def get_cluster_for_task(self, task):
@@ -276,7 +281,8 @@ class SelfOrganization:
                 best_score = score
                 best_cluster = cluster
         return best_cluster or []
-    def cluster_agents(self):
+    def cluster_agents(self, strategy=None):
+        if strategy is None: strategy = self.strategy
         self.clusters = []
         self.agent_clusters = {}
         agents = self.coordinator.get_active_agents()
@@ -317,7 +323,7 @@ class SelfOrganization:
                 self.anomalies.append({"agent_id": agent.agent_id, "type": "low_health", "score": agent.health_score})
         return self.anomalies
     
-    def organize(self): self.cluster_agents(); self.reassign_tasks(); self.detect_anomalies(); return self.adapt_organization()
+    def organize(self): self.cluster_agents(self.strategy); self.reassign_tasks(); self.detect_anomalies(); return self.adapt_organization()
     def adapt_organization(self):
         self.adaptations = []
         clusters = self.cluster_agents()
