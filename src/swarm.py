@@ -71,6 +71,7 @@ class SwarmAgent:
         self.heartbeat_count=0; self.task_count=0; self.encoder=encoder or MessageEncoder(); self.decoder=decoder or MessageDecoder()
         self.circuit_breaker=CircuitBreaker(failure_threshold=5,recovery_timeout=30); self.event_bus=EventBus()
         self.token_billing=TokenBilling(config=TEQConfig()); self.token_billing.create_user(self.agent_id,tier=QoSTierLevel.GOLD)
+        self.car_router=CARRouter()
     def update_heartbeat(self): self.heartbeat_count+=1; self.task_count+=1; return self.heartbeat_count
     def add_neighbor(self,agent_id):
         if agent_id not in self.neighbors and agent_id!=self.agent_id: self.neighbors.append(agent_id)
@@ -85,8 +86,12 @@ class SwarmAgent:
     def deserialize_state(self, state_bytes):
         import json
         return json.loads(state_bytes.decode())
-    def intent_classifier(self, task_description):
-        return {"intent":"process","confidence":0.8,"required_capabilities":[]}
+    @property
+    def intent_classifier(self):
+        from atc import IntentClassifier
+        if not hasattr(self, '_ic'):
+            self._ic = IntentClassifier()
+        return self._ic
     @property
     def success_rate(self):
         total=len(self.completed_tasks)+len(self.failed_tasks)
@@ -119,15 +124,19 @@ class SwarmAgent:
 class SwarmCoordinator:
     def __init__(self,config=None):
         self.config=config or SwarmConfig(); self.agents={}; self.task_registry={}; self.broker=MessageBroker(); self.circuit_breaker=CircuitBreaker(failure_threshold=5,recovery_timeout=30); self.event_bus=EventBus(); self._leader_id=None
-    def distribute_load(self, tasks=None):
-        if tasks is None:
-            return {}
+    def distribute_load(self, tasks):
+        """Distribute tasks across agents by capability."""
         assignments = {}
-        agents = list(self.agents.values())
-        for i, task_id in enumerate(tasks):
-            if agents:
-                agent = agents[i % len(agents)]
-                assignments[str(task_id)] = agent.agent_id
+        available = [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
+        for i, task in enumerate(tasks):
+            if not available: break
+            if isinstance(task, str):
+                task = SwarmTask(description=task, task_id=task)
+            best = max(available, key=lambda a: a.evaluate_task_fit(task) if hasattr(a, 'evaluate_task_fit') else 0)
+            task.assigned_agent = best.agent_id
+            task.status = "assigned"
+            best.task_queue.append(task)
+            assignments[task.task_id] = best.agent_id
         return assignments
 
     def register_agent(self, agent_or_role, capabilities=None):
@@ -182,16 +191,18 @@ class SwarmCoordinator:
         leaders = [a for a in available if a.role in (AgentRole.LEADER, AgentRole.COORDINATOR)]
         return leaders[0] if leaders else available[0] if available else None
     def get_capable_agents(self, capability):
-        caps = capability if isinstance(capability, list) else [capability]
-        return [a for a in self.agents.values() if any(cap in (a.capability_vector.capabilities or []) for cap in caps)]
+        if isinstance(capability, str):
+            return [a for a in self.agents.values() if capability in (a.capability_vector.capabilities or [])]
+        return [a for a in self.agents.values() if any(c in (a.capability_vector.capabilities or []) for c in capability)]
     def get_active_agents(self): return [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
     def get_status(self):
         return AgentState.ACTIVE if self.agents else AgentState.OFFLINE
     def get_metrics(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry)}
     def discover_agents(self, role=None):
-        if role is None:
-            return [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values()]
-        return [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values() if a.role == role]
+        agents = [AgentInfo(agent_id=a.agent_id, role=a.role, state=a.state) for a in self.agents.values()]
+        if role is not None:
+            agents = [a for a in agents if a.role == role]
+        return agents
     def submit_task(self,description,priority=TaskPriority.NORMAL,required_capabilities=None,decompose=False):
         task=SwarmTask(description=description,priority=priority,required_capabilities=required_capabilities or {})
         tid=str(task.task_id) if not isinstance(task.task_id,str) else task.task_id
@@ -206,10 +217,7 @@ class SwarmCoordinator:
         return agent_id_a if agent_id_a in self.agents else agent_id_b
     def decompose_task(self, task_id):
         task = self.task_registry.get(task_id)
-        if task and hasattr(task, 'sub_tasks') and task.sub_tasks:
-            return task.sub_tasks
-        if task:
-            return [task]
+        if not task: return []
         return [task_id]
     def broadcast_heartbeat(self): return [a.heartbeat() for a in self.agents.values()]
     def to_dict(self): return {"total_agents":len(self.agents),"total_tasks":len(self.task_registry),"health":self.get_swarm_health(),"config":asdict(self.config)}
@@ -301,11 +309,18 @@ class ConsensusResult:
     total_votes: int = 0
     approval_count: int = 0
     weight: float = 1.0
+    duration_ms: float = 0.0
 
     def __post_init__(self):
         if self.votes is None:
             self.votes = []
         self.approved = self.reached
+        if isinstance(self.votes, list):
+            self.total_votes = len(self.votes)
+            self.approval_count = sum(1 for v in self.votes if v.get("vote"))
+        else:
+            self.total_votes = 0
+            self.approval_count = 0
 
 class SwarmError(Exception): pass
 class AgentNotFoundError(SwarmError): pass
@@ -398,7 +413,7 @@ class SelfOrganization:
         self.cluster_agents(self.strategy)
         self.reassign_tasks()
         self.detect_anomalies()
-        result = [c for c in self.clusters]
+        result = {i: cluster for i, cluster in enumerate(self.clusters)}
         return result
     def adapt_organization(self):
         self.adaptations = []

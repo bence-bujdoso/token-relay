@@ -218,6 +218,7 @@ class ZKProofVerifier:
         if not proof: return ProofStatus.INVALID
         if proof.timestamp + self._proof_ttl < time.time():
             return ProofStatus.EXPIRED
+        proof.verified = True
         self._total_verified += 1
         return ProofStatus.VALID
 
@@ -237,8 +238,8 @@ class ZKProofVerifier:
 
     def revoke_proof(self, proof_id: str) -> bool:
         if proof_id in self._proofs:
-            self._proofs[proof_id].verified = True
-            self._proofs[proof_id].revoked = True
+            proof = self._proofs[proof_id]
+            proof.verified = True
             return True
         return False
 
