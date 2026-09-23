@@ -29,6 +29,8 @@ class AdapterState(Enum):
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
     ERROR = "error"
+    ACTIVE = "active"
+    PAUSED = "paused"
 
 class TranslationFormat(Enum):
     JSON = "json"
@@ -36,6 +38,8 @@ class TranslationFormat(Enum):
     XML = "xml"
     YAML = "yaml"
     BINARY = "binary"
+    MESSAGE_PACK = "msgpack"
+    CBOR = "cbor"
 
 class BridgeState(Enum):
     CONNECTED = "connected"
@@ -46,8 +50,8 @@ class BridgeState(Enum):
 
 @dataclass
 class AdapterConfig:
-    protocol_type: ProtocolType
-    endpoint: str
+    protocol_type: ProtocolType = ProtocolType.HTTP_REST
+    endpoint: str = ""
     format: TranslationFormat = TranslationFormat.JSON
     priority: int = 5
     qos_tier: str = "silver"
@@ -55,13 +59,6 @@ class AdapterConfig:
     heartbeat_interval: int = 30
     auth_token: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def __init__(self, protocol_type: ProtocolType = ProtocolType.HTTP_REST,
-                 endpoint: str = ""):
-        self.protocol_type = protocol_type
-        self.endpoint = endpoint
-
-
 @dataclass
 class ExternalAdapter:
     adapter_id: str
@@ -80,23 +77,28 @@ class ExternalAdapter:
 
     def disconnect(self) -> bool:
         self.state = AdapterState.DISCONNECTED
+        self.last_activity = time.time()
         return True
 
     def pause(self) -> bool:
         self.state = AdapterState.PAUSED
+        self.last_activity = time.time()
         return True
 
     def resume(self) -> bool:
         self.state = AdapterState.CONNECTED
+        self.last_activity = time.time()
         return True
 
-    def record_error(self) -> None:
+    def record_error(self) -> bool:
         self.error_count += 1
         self.last_activity = time.time()
+        return True
 
-    def record_message(self) -> None:
+    def record_message(self) -> bool:
         self.message_count += 1
         self.last_activity = time.time()
+        return True
 
     def get_stats(self) -> dict:
         return {"message_count": self.message_count, "error_count": self.error_count,
@@ -112,6 +114,7 @@ class ExternalAdapter:
         self.state = state
         self.last_activity = time.time()
         self.message_count = 0
+        self.error_count = 0
 
 
 class InteropError(Exception): pass
@@ -225,14 +228,20 @@ class AdapterRegistry:
 
 
 class TranslationRule:
-    def __init__(self, source_format: str = "json",
-                 target_format: str = "json",
+    def __init__(self, source_format: TranslationFormat = TranslationFormat.JSON,
+                 target_format: TranslationFormat = TranslationFormat.JSON,
                  source_protocol: ProtocolType = ProtocolType.HTTP_REST,
-                 target_protocol: ProtocolType = ProtocolType.MQTT):
+                 target_protocol: ProtocolType = ProtocolType.MQTT,
+                 field_mappings: Dict[str, str] = field(default_factory=dict),
+                 default_values: Dict[str, Any] = field(default_factory=dict),
+                 priority: int = 5):
         self.source_format = source_format
         self.target_format = target_format
         self.source_protocol = source_protocol
         self.target_protocol = target_protocol
+        self.field_mappings = field_mappings or {}
+        self.default_values = default_values or {}
+        self.priority = priority
 
 
 class ProtocolBridge:
@@ -261,30 +270,16 @@ class ProtocolBridge:
         self._state = BridgeState.DISCONNECTED
         return True
 
-    def forward_token(self, token_id: str, payload: dict) -> bool:
+    def forward_token(self, token_id: str, payload: dict, target_protocol: Optional[ProtocolType] = None) -> dict:
         """Forward a token through the bridge."""
-        return True
+        self._total_forwarded = getattr(self, '_total_forwarded', 0) + 1
+        return {"status": "forwarded", "token_id": token_id, "target_protocol": target_protocol.value if target_protocol else "unknown"}
 
     def receive_external(self, protocol_type: ProtocolType, payload: dict) -> dict:
         return {"payload": payload, "source_protocol": protocol_type.value}
 
     def set_bidirectional(self, bidirectional: bool) -> None:
         self._bidirectional = bidirectional
-
-    def get_bridge_stats(self) -> Dict[str, Any]:
-        return {"state": self._state.value if hasattr(self._state, 'value') else str(self._state),
-                "bidirectional": getattr(self, '_bidirectional', False)}
-
-    def receive_external(self, protocol_type: ProtocolType, payload: dict) -> dict:
-        """Receive a message from an external protocol."""
-        return {"payload": payload, "source_protocol": protocol_type.value}
-
-    def set_bidirectional(self, bidirectional: bool) -> None:
-        """Set bidirectional mode."""
-        self._bidirectional = bidirectional
-
-    def get_bridge_stats(self) -> Dict[str, Any]:
-        return {"total_forwarded": 0, "total_received": 0, "total_translated": 0, "uptime_seconds": 0, "adapter_stats": {}, "state": self._state.value}
 
     def pause(self):
         self._state = BridgeState.PAUSED
@@ -299,6 +294,16 @@ class ProtocolBridge:
     @_state.setter
     def _state(self, value):
         self.__state = value
+
+    def get_bridge_stats(self) -> Dict[str, Any]:
+        return {
+            "total_forwarded": getattr(self, '_total_forwarded', 0),
+            "total_received": getattr(self, '_total_received', 0),
+            "total_translated": getattr(self, '_total_translated', 0),
+            "uptime_seconds": getattr(self, '_uptime_start', 0),
+            "adapter_stats": self._registry.get_stats(),
+            "state": self._state.value if hasattr(self._state, 'value') else str(self._state)
+        }
 
 
 class BridgeConfig:
@@ -325,7 +330,18 @@ class CrossProtocolGateway:
         self._teq_billing = teq_billing or TokenBilling()
         self._car_router = car_router or CARRouter()
         self._bridge = ProtocolBridge()
-        self._format_handlers: Dict[str, Any] = {"json": lambda p: p, "protobuf": lambda p: p, "xml": lambda p: p, "yaml": lambda p: p, "binary": lambda p: p, "cbor": lambda p: p, "msgpack": lambda p: p, "message_pack": lambda p: p}
+        self._format_handlers: Dict[str, Any] = {}
+        # Register format handlers
+        import json, pickle
+        self._format_handlers = {
+            "json": lambda p: json.dumps(p),
+            "protobuf": lambda p: str(p).encode(),
+            "xml": lambda p: str(p).encode(),
+            "yaml": lambda p: str(p).encode(),
+            "binary": lambda p: pickle.dumps(p),
+            "cbor": lambda p: str(p).encode(),
+            "message_pack": lambda p: str(p).encode(),
+        }
         self._cache: Dict[str, Any] = {}
         self._supported_protocols = [p.value for p in ProtocolType]
         self._supported_formats = [f.value for f in TranslationFormat]
@@ -378,8 +394,23 @@ class UniversalTranslator:
         self._teq_billing = teq_billing or TokenBilling()
         self._car_router = car_router or CARRouter()
         self._brp_server = brp_server
-        self._rules: List[TranslationRule] = []
-        self._format_handlers: Dict[str, Any] = {"json": lambda p: p, "protobuf": lambda p: p, "xml": lambda p: p, "yaml": lambda p: p, "binary": lambda p: p, "cbor": lambda p: p, "msgpack": lambda p: p, "message_pack": lambda p: p}
+        self._rules: List[TranslationRule] = [
+            TranslationRule(source_format=TranslationFormat.JSON, target_format=TranslationFormat.JSON),
+            TranslationRule(source_format=TranslationFormat.JSON, target_format=TranslationFormat.PROTOBUF),
+            TranslationRule(source_format=TranslationFormat.PROTOBUF, target_format=TranslationFormat.JSON),
+        ]
+        self._format_handlers: Dict[str, Any] = {}
+        # Register format handlers
+        import json, pickle
+        self._format_handlers = {
+            "json": lambda p: json.dumps(p),
+            "protobuf": lambda p: str(p).encode(),
+            "xml": lambda p: str(p).encode(),
+            "yaml": lambda p: str(p).encode(),
+            "binary": lambda p: pickle.dumps(p),
+            "cbor": lambda p: str(p).encode(),
+            "message_pack": lambda p: str(p).encode(),
+        }
         self._stats = {"total_conversions": 0}
 
     def convert(self, message: dict, source_format: TranslationFormat,
@@ -411,12 +442,24 @@ class UniversalTranslator:
         self._rules.append(rule)
         return True
 
-    def remove_rule(self, source_format: TranslationFormat, target_format: TranslationFormat) -> bool:
+    def remove_rule(self, source_format, target_format):
+        src_val = source_format.value if isinstance(source_format, TranslationFormat) else source_format
+        tgt_val = target_format.value if isinstance(target_format, TranslationFormat) else target_format
         for i, rule in enumerate(self._rules):
-            if rule.source_format.value == source_format.value and rule.target_format.value == target_format.value:
+            if rule.source_format == src_val and rule.target_format == tgt_val:
                 self._rules.pop(i)
                 return True
         return False
+
+    def translate(self, token_id, payload, source_format, target_format):
+        result = self.convert(payload, source_format, target_format)
+        return {"original_token_id": token_id, "converted_payload": result, "status": "success"}
+
+    def batch_translate(self, token_ids, payloads, source_format, target_format):
+        return [self.translate(tid, p, source_format, target_format) for tid, p in zip(token_ids, payloads)]
+
+    def batch_convert(self, messages, source_format, target_format):
+        return [self.convert(m, source_format, target_format) for m in messages]
 
     def get_rule_count(self) -> int:
         return len(self._rules)

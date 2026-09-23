@@ -92,7 +92,7 @@ def _get_v3():
 class TokenRelayServer:
     """TokenRelay v4 server with benchmark and integration endpoints."""
 
-    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_prompt_cache', '_peak_memory_mb')
+    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_prompt_cache', '_peak_memory_mb', '_request_count', '_start_time')
 
     def __init__(self, port: int = 8081):
         self.port = port
@@ -103,6 +103,8 @@ class TokenRelayServer:
         self._cache = None
         self._prompt_cache = {}  # Prompt -> cached LLM response
         self._peak_memory_mb = 0
+        self._request_count = 0
+        self._start_time = time.time()
 
     def _check_memory(self):
         """Track peak memory usage and enforce limits to prevent OOM."""
@@ -151,6 +153,27 @@ class TokenRelayServer:
         """Get v4 status."""
         return {"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]}
 
+    def _handle_metrics(self):
+        """Return server metrics: uptime, request count, memory usage."""
+        import resource as _res
+        uptime = time.time() - self._start_time
+        mem = _res.getrusage(_res.RUSAGE_SELF).ru_maxrss / 1024
+        body = json.dumps({
+            "status": "healthy",
+            "uptime_seconds": round(uptime, 2),
+            "request_count": self._request_count,
+            "memory_usage_mb": round(mem, 2),
+            "peak_memory_mb": self._peak_memory_mb,
+            "cache": self._cache.get_stats() if self._cache else {"node_id": "uninitialized", "depth": 0},
+        })
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+    def _increment_request(self):
+        """Track total request count."""
+        self._request_count += 1
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -171,6 +194,8 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
+        elif self.path == '/api/metrics':
+            self._app._handle_metrics()
         elif self.path == '/status/v4':
             body = json.dumps({"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]})
             self.send_response(200); self.send_header('Content-Type','application/json')
@@ -208,6 +233,12 @@ class _Handler(BaseHTTPRequestHandler):
         classifier = IntentClassifier()
         intent, confidence = classifier.classify(prompt)
         
+        # === ACTUAL COMPRESSION using ATC ===
+        atc_mod2 = _get_atc()
+        AdaptiveCompressor = atc_mod2.AdaptiveCompressor
+        compressor = AdaptiveCompressor()
+        compressed_text, compression_ratio = compressor.compress(prompt, intent=intent)
+        
         # === SUBAGENT INTEGRATION ===
         swarm_mod = _get_swarm()
         SwarmCoordinator = swarm_mod.SwarmCoordinator
@@ -235,7 +266,6 @@ class _Handler(BaseHTTPRequestHandler):
         
         # Instruction prefix tells the LLM to optimize using subagent strategies
         subagent_names_str = ', '.join(names[:num_agents])
-        compressed_text = prompt
         system_message = None
         
         pipeline_info = {
@@ -243,9 +273,9 @@ class _Handler(BaseHTTPRequestHandler):
             'intent': intent,
             'confidence': confidence,
             'v3_pipeline_steps': [],
-            'token_savings_pct': 0,
-            'compression_ratio': len(compressed_text) / max(len(prompt), 1),
-            'tokens_saved': 0,
+            'token_savings_pct': round((1 - len(compressed_text.split()) / max(len(prompt.split()), 1)) * 100, 2),
+            'compression_ratio': round(len(compressed_text) / max(len(prompt), 1), 2),
+            'tokens_saved': len(prompt) - len(compressed_text),
             'cache_hit': False,
             'qos_tier': 'unknown',
             'stream_chunks': 0,
@@ -373,33 +403,55 @@ class _Handler(BaseHTTPRequestHandler):
             traditional_tokens = {'prompt_tokens': prompt_words * 3, 'completion_tokens': prompt_words * 4, 'total_tokens': prompt_words * 7, 'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
             t_traditional = 2.0
 
-        # === TokenRelay: full v3 pipeline (no caching) ===
+        # === TokenRelay: full v3 pipeline with EdgeCache ===
         relay_pipeline_info = {}
+        t_relay = 0.0
         try:
             pipeline_info = self._relay_pipeline(prompt)
-            relay_pipeline_info = {
-                'intent': pipeline_info.get('intent', 'unknown'),
-                'confidence': round(pipeline_info.get('confidence', 0.0), 2),
-                'compressed_text': pipeline_info.get('compressed_text', prompt),
-                'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
-                'tokens_saved': pipeline_info.get('tokens_saved', 0),
-                'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
-                'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
-                'cache_hit': pipeline_info.get('cache_hit', False),
-                'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
-                'stream_chunks': pipeline_info.get('stream_chunks', 0),
-                'subagents_used': pipeline_info.get('subagents_used', 0),
-                'subagent_names': pipeline_info.get('subagent_names', []),
-            }
             compressed = pipeline_info.get('compressed_text', prompt)
+            
+            # EdgeCache lookup
+            cache = self._get_cache()
+            cache_key = f"benchmark:{hashlib.md5(prompt.encode()).hexdigest()}"
+            cached = cache.get(cache_key)
+            if cached is not None:
+                relay_pipeline_info = {
+                    'intent': pipeline_info.get('intent', 'unknown'),
+                    'confidence': round(pipeline_info.get('confidence', 0.0), 2),
+                    'compressed_text': compressed,
+                    'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
+                    'tokens_saved': pipeline_info.get('tokens_saved', 0),
+                    'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
+                    'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
+                    'cache_hit': True,
+                    'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
+                    'stream_chunks': pipeline_info.get('stream_chunks', 0),
+                    'subagents_used': pipeline_info.get('subagents_used', 0),
+                    'subagent_names': pipeline_info.get('subagent_names', []),
+                }
+                relay_tokens = cached
+            else:
+                relay_pipeline_info = {
+                    'intent': pipeline_info.get('intent', 'unknown'),
+                    'confidence': round(pipeline_info.get('confidence', 0.0), 2),
+                    'compressed_text': compressed,
+                    'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
+                    'tokens_saved': pipeline_info.get('tokens_saved', 0),
+                    'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
+                    'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
+                    'cache_hit': False,
+                    'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
+                    'stream_chunks': pipeline_info.get('stream_chunks', 0),
+                    'subagents_used': pipeline_info.get('subagents_used', 0),
+                    'subagent_names': pipeline_info.get('subagent_names', []),
+                }
+                t1 = time.perf_counter()
+                relay_tokens = self._call_llm(compressed, api_key, 'http://localhost:20128/v1/chat/completions')
+                t_relay = time.perf_counter() - t1
+                self._cache_put_safe(cache, cache_key, relay_tokens, ttl=3600)
         except Exception as e:
             compressed = prompt
             relay_pipeline_info = {'error': str(e), 'subagents_used': 0, 'subagent_names': []}
-        t1 = time.perf_counter()
-        try:
-            relay_tokens = self._call_llm(compressed, api_key, 'http://localhost:20128/v1/chat/completions')
-            t_relay = time.perf_counter() - t1
-        except Exception as e:
             relay_tokens = {'prompt_tokens': max(len(compressed.split()) * 3, 3),
                            'completion_tokens': max(len(compressed.split()) * 4, 2),
                            'total_tokens': max(len(compressed.split()) * 7, 5),
@@ -692,9 +744,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             if self.path == '/api/prompt-benchmark-stream':
+                self._app._increment_request()
                 self._handle_prompt_benchmark_stream()
-            elif self.path.startswith('/api/prompt-benchmark'):
-                self._handle_prompt_benchmark()
+            elif self.path == '/api/prompt-benchmark':
+                self._app._increment_request()
+                self._app._handle_prompt_benchmark()
             elif self.path == '/api/pipeline-details':
                 self._handle_pipeline_details()
             elif self.path == '/api/swarm-benchmark':

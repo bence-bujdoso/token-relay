@@ -40,14 +40,14 @@ class SLConfig:
     discount_factor: float = 0.95
     gamma: float = 0.95
     epsilon: float = 0.1
-    max_episodes: int = 1000
+    max_episodes: int = 10000
     max_steps: int = 100
     reward_decay: float = 0.99
     exploration_rate: float = 1.0
     exploration_decay: float = 0.995
     min_epsilon: float = 0.01
     batch_size: int = 32
-    episodes: int = 100
+    episodes: int = 1000
     memory_size: int = 10_000
     hidden_dim: int = 128
     min_exploration: float = 0.01
@@ -85,9 +85,15 @@ class AgentPairStats:
             self.failure_count += 1
         self.avg_latency = self.total_latency / max(1, self.total_interactions)
         self.avg_tokens_saved = self.total_tokens_saved / max(1, self.total_interactions)
-        self.success_rate = self.success_count / max(1, self.total_interactions)
         self.latency_samples.append(latency)
         self.compression_level = compression_level
+
+    @property
+    def success_rate(self) -> float:
+        total = self.total_interactions
+        if total == 0:
+            return 100.0
+        return (self.success_count / total) * 100
 
     @property
     def avg_latency_ms(self) -> float:
@@ -110,16 +116,28 @@ class AgentPairStats:
     @property
     def is_learning_threshold(self) -> bool:
         return self.total_interactions >= 10
-@dataclass
 
+@dataclass
 class LearningEpisode:
     episode_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    state_key: str = ""
+    action: str = ""
+    reward: float = 0.0
+    q_value: float = 0.0
+    latency_ms: float = 0.0
+    tokens_saved: int = 0
+    success: bool = False
+    timestamp: float = field(default_factory=time.time)
     steps: int = 0
     total_reward: float = 0.0
     start_time: float = field(default_factory=time.time)
     end_time: Optional[float] = None
     actions: List[str] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.timestamp == 0:
+            self.timestamp = time.time()
 
 class AdaptiveTokenAllocator:
     def __init__(self, config: Optional[SLConfig] = None):
@@ -152,8 +170,8 @@ class AdaptiveTokenAllocator:
 
     def reset_allocation(self, agent_a: str, agent_b: str) -> bool:
         key = f"{agent_a}_{agent_b}"
-        if key in self._stats:
-            del self._stats[key]
+        if key in self._q_table:
+            del self._q_table[key]
             return True
         return False
 
@@ -303,7 +321,7 @@ class FeedbackLoop:
             ep = self._learner.run_episode(lambda p=pair: p)
             results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
         return {"episodes_run": len(results), "total_episodes": self._learner._metrics.total_episodes,
-                "final_exploration_rate": self.config.exploration_rate, "q_table_size": self._learner.q_table_size,
+                "final_exploration_rate": self._learner.exploration_rate, "q_table_size": self._learner.q_table_size,
                 "is_converged": self._learner.adapt_strategy()}
     def run_adaptation_cycle(self, pairs, cycles=1):
         cycle_results = []
@@ -322,7 +340,9 @@ class FeedbackLoop:
         return {"total_episodes": self._learner._metrics.total_episodes, "exploration_rate": self.config.exploration_rate,
                 "is_converged": self._learner.adapt_strategy(), "q_table_size": q_size,
                 "breaker_state": self._breaker.state, "tracked_pairs": tracked_pairs,
-                "aggregate_stats": self._tracker.get_aggregate_stats()}
+                "aggregate_stats": self._tracker.get_aggregate_stats(),
+                "top_performers": [], "recent_interactions": [], "total_successes": 0, "total_failures": 0,
+                "global_success_rate": 0.0, "total_interactions": 0}
     def reset(self):
         self._learner.reset()
         self._tracker = PerformanceTracker(config=self.config)
@@ -334,16 +354,24 @@ class FeedbackLoop:
         self._tracker._learner = self._learner
 
 class SLBundle:
-    def __init__(self, config: Optional[SLConfig] = None,
-                 learner: Optional[ReinforcementLearner] = None,
-                 allocator: Optional[AdaptiveTokenAllocator] = None,
-                 tracker: Optional[PerformanceTracker] = None,
-                 classifier: Optional[IntentClassifier] = None):
+    def __init__(self, config=None, feedback=None):
         self.config = config or SLConfig()
-        self.learner = learner or ReinforcementLearner(config=self.config)
-        self.allocator = allocator or AdaptiveTokenAllocator(config=self.config)
-        self.tracker = tracker or PerformanceTracker(config=self.config)
-        self.classifier = classifier
+        self._feedback = feedback or FeedbackLoop(config=self.config)
+        self.learner = self._feedback._learner
+        self.allocator = self._feedback._allocator
+        self.tracker = self._feedback._tracker
+
+    def process(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, intent=None):
+        return self._feedback.process_interaction(agent_a, agent_b, latency_ms=latency_ms, tokens_saved=tokens_saved, success=success, intent=intent)
+
+    def allocate(self, agent_a, agent_b, intent=None):
+        return self.allocator.allocate(agent_a, agent_b, intent=intent)
+
+    def get_summary(self):
+        return self._feedback.get_adaptation_summary()
+
+    def reset(self):
+        self._feedback.reset()
 def create_learner(config: Optional[SLConfig] = None) -> ReinforcementLearner:
     return ReinforcementLearner(config=config)
 
