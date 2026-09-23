@@ -140,17 +140,19 @@ class LearningEpisode:
             self.timestamp = time.time()
 
 class AdaptiveTokenAllocator:
-    def __init__(self, config: Optional[SLConfig] = None):
+    def __init__(self, config: Optional[SLConfig] = None, learner=None, tracker=None):
         self.config = config or SLConfig()
         self._q_table: Dict[str, float] = defaultdict(float)
         self._stats: Dict[str, AgentPairStats] = {}
         self._cache: Dict[str, float] = {}
-        self._broker = MessageBroker()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
         self.episode_count = 0
         self.is_converged = False
         self.exploration_rate = config.exploration_rate if config else 1.0
-        self._learner = ReinforcementLearner(config=config)
+        self._learner = learner or ReinforcementLearner(config=config)
+        self._tracker = tracker  # Set externally to avoid circular init
+        if self._tracker:
+            self._tracker._learner = self._learner
 
     def allocate(self, agent_a: str, agent_b: str, intent: Optional[str] = None) -> float:
         key = f"{agent_a}_{agent_b}"
@@ -163,12 +165,12 @@ class AdaptiveTokenAllocator:
 
     def get_allocation(self, agent_a: str, agent_b: str) -> Optional[float]:
         key = f"{agent_a}_{agent_b}"
-        if key not in self._stats:
-            return None
-        return self._stats.get(key, AgentPairStats()).compression_level
+        if key in self._q_table:
+            return self._q_table[key]
+        return None
 
     def get_all_allocations(self) -> dict:
-        return {k: v.compression_level for k, v in self._stats.items()}
+        return dict(self._q_table)
 
     def reset_allocation(self, agent_a: str, agent_b: str) -> bool:
         key = f"{agent_a}_{agent_b}"
@@ -183,7 +185,8 @@ class AdaptiveTokenAllocator:
         if key not in self._stats:
             self._stats[key] = AgentPairStats(agent_a=agent_a, agent_b=agent_b)
         self._stats[key].record(latency_ms, tokens_saved, success, compression_level)
-        return {"pair_id": key, "success": success}
+        return {"pair_id": key, "success": success, "total_interactions": self._stats[key].total_interactions,
+                "success_rate": self._stats[key].success_rate}
 
     def get_stats(self, key: str) -> AgentPairStats:
         return self._stats.get(key, AgentPairStats(agent_a=key, agent_b=""))
@@ -203,12 +206,19 @@ class AdaptiveTokenAllocator:
 
     def adapt(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, intent=None):
         key = f"{agent_a}_{agent_b}"
-        previous_level = self.allocate(agent_a, agent_b)
+        if key not in self._q_table:
+            self._q_table[key] = 0.5
+        previous_level = self._q_table[key]
         reward = 1.0 if success else -1.0
         if latency_ms > 200: reward -= 0.5
         if tokens_saved > 50: reward += 0.3
         self.record_interaction(agent_a, agent_b, latency_ms, tokens_saved, success)
-        return {"pair_id": key, "reward": reward, "new_compression_level": self.allocate(agent_a, agent_b),
+        # Update Q-value based on reward
+        max_next = max(self._learner._q_table.get(key, {}).values(), default=0)
+        self._q_table[key] += self.config.learning_rate * (reward + self.config.discount_factor * max_next - self._q_table[key])
+        # Also update the learner's Q-table
+        self._learner._q_table[key][key] = self._q_table[key]
+        return {"pair_id": key, "reward": reward, "new_compression_level": self._q_table[key],
                 "previous_level": previous_level, "action_taken": "increase" if reward > 0 else "decrease", "success": success}
 
     def _compute_reward(self, agent_a, agent_b, success):
@@ -221,6 +231,23 @@ class PerformanceTracker(AdaptiveTokenAllocator):
         """Get stats for a pair."""
         return self.get_stats(f"{agent_a}_{agent_b}")
 
+    def reset_pair(self, agent_a: str, agent_b: str) -> bool:
+        """Reset stats for a specific pair."""
+        key = f"{agent_a}_{agent_b}"
+        if key in self._stats:
+            del self._stats[key]
+            return True
+        return False
+
+    def reset_all(self) -> bool:
+        """Reset all stats."""
+        self._stats.clear()
+        return True
+
+    def _pair_key(self, agent_a: str, agent_b: str) -> str:
+        """Get deterministic symmetric pair key."""
+        return f"{min(agent_a, agent_b)}_{max(agent_a, agent_b)}"
+
 
 class ReinforcementLearner:
     def __init__(self, config: Optional[SLConfig] = None):
@@ -228,15 +255,20 @@ class ReinforcementLearner:
         self._q_table: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
         self._metrics = type('Metrics', (), {'total_episodes': 0, 'total_steps': 0})()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
-        episode_count = 0
-        is_converged = False
-        exploration_rate = config.exploration_rate if config else 1.0
-        _event_bus = EventBus()
-        _total_rewards = 0.0
+        self.episode_count = 0
+        self.is_converged = False
+        self.exploration_rate = config.exploration_rate if config else 1.0
+        self._event_bus = EventBus()
+        self._total_rewards = 0.0
+        # Compute is_converged from current exploration rate
+        self.is_converged = self.exploration_rate <= self.config.min_exploration
 
-        def select_action(self, state: str, valid_actions: Optional[List[str]] = None) -> str:
+    def select_action(self, state: str, valid_actions: Optional[List[str]] = None) -> str:
         actions = self._q_table.get(state, {})
-        if not actions: return "a0"
+        if not actions:
+            if valid_actions:
+                return valid_actions[0]
+            return "a0"
         if valid_actions:
             candidates = [a for a in actions if a in valid_actions]
             if candidates:
@@ -254,6 +286,17 @@ class ReinforcementLearner:
     @property
     def total_rewards(self) -> float:
         return self._metrics.total_steps * 0.1
+
+    def get_policy(self, state: str) -> Optional[List[str]]:
+        if state not in self._q_table or not self._q_table[state]: return None
+        max_q = max(self._q_table[state].values())
+        return [a for a, q in self._q_table[state].items() if q == max_q]
+
+    def get_q_values_for_state(self, state: str) -> Dict[str, float]:
+        return dict(self._q_table.get(state, {}))
+
+    def get_learning_log(self, limit: int = 10) -> List[dict]:
+        return []
 
     def choose_action(self, state: str) -> str:
         actions = self._q_table.get(state, {})
@@ -344,9 +387,11 @@ class FeedbackLoop:
         for _ in range(episodes):
             ep = self._learner.run_episode(lambda p=pair: p)
             results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
+        self._learner.decay_exploration()
         return {"episodes_run": len(results), "total_episodes": self._learner._metrics.total_episodes,
                 "final_exploration_rate": self._learner.exploration_rate, "q_table_size": self._learner.q_table_size,
                 "is_converged": self._learner.adapt_strategy()}
+
     def run_adaptation_cycle(self, pairs, cycles=1):
         cycle_results = []
         for cycle in range(cycles):
@@ -358,6 +403,7 @@ class FeedbackLoop:
                     cycle_reward += result["reward"]
             cycle_results.append({"cycle": cycle, "reward": cycle_reward})
         return {"cycles_completed": cycles, "aggregate_reward": sum(c["reward"] for c in cycle_results), "cycle_results": cycle_results}
+
     def get_adaptation_summary(self):
         tracked_pairs = len(self._tracker.get_all_pairs())
         q_size = self._learner.q_table_size
@@ -367,6 +413,7 @@ class FeedbackLoop:
                 "aggregate_stats": self._tracker.get_aggregate_stats(),
                 "top_performers": [], "recent_interactions": [], "total_successes": 0, "total_failures": 0,
                 "global_success_rate": 0.0, "total_interactions": 0}
+
     def reset(self):
         self._learner.reset()
         self._tracker = PerformanceTracker(config=self.config)
