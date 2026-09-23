@@ -143,7 +143,7 @@ class TokenRelayServer:
         """Get v4 module metrics."""
         return {
             "version": "4.0.0",
-            "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"],
+            "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner", "ATCPipeline"],
             "status": "active",
             "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC",
         }
@@ -658,7 +658,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/metrics/v4':
-            body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
+            body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner", "ATCPipeline"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/api/metrics':

@@ -124,8 +124,10 @@ class SwarmAgent:
 class SwarmCoordinator:
     def __init__(self,config=None):
         self.config=config or SwarmConfig(); self.agents={}; self.task_registry={}; self.broker=MessageBroker(); self.circuit_breaker=CircuitBreaker(failure_threshold=5,recovery_timeout=30); self.event_bus=EventBus(); self._leader_id=None
-    def distribute_load(self, tasks):
+    def distribute_load(self, tasks=None):
         """Distribute tasks across agents by capability."""
+        if tasks is None:
+            tasks = []
         assignments = {}
         available = [a for a in self.agents.values() if a.state != AgentState.OFFLINE]
         for i, task in enumerate(tasks):
