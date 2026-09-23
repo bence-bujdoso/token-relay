@@ -90,7 +90,7 @@ class AgentPairStats:
 
     @property
     def success_rate(self) -> float:
-        total = self.total_interactions
+        total = self.total_interactions if self.total_interactions > 0 else (self.success_count + self.failure_count)
         if total == 0:
             return 100.0
         return (self.success_count / total) * 100
@@ -161,8 +161,10 @@ class AdaptiveTokenAllocator:
     def get_optimal_compression(self, pair_id: str) -> float:
         return self._q_table.get(pair_id, 0.5)
 
-    def get_allocation(self, agent_a: str, agent_b: str) -> float:
+    def get_allocation(self, agent_a: str, agent_b: str) -> Optional[float]:
         key = f"{agent_a}_{agent_b}"
+        if key not in self._stats:
+            return None
         return self._stats.get(key, AgentPairStats()).compression_level
 
     def get_all_allocations(self) -> dict:
@@ -226,10 +228,32 @@ class ReinforcementLearner:
         self._q_table: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
         self._metrics = type('Metrics', (), {'total_episodes': 0, 'total_steps': 0})()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
-        self.episode_count = 0
-        self.is_converged = False
-        self.exploration_rate = config.exploration_rate if config else 1.0
-        self._event_bus = EventBus()
+        episode_count = 0
+        is_converged = False
+        exploration_rate = config.exploration_rate if config else 1.0
+        _event_bus = EventBus()
+        _total_rewards = 0.0
+
+        def select_action(self, state: str, valid_actions: Optional[List[str]] = None) -> str:
+        actions = self._q_table.get(state, {})
+        if not actions: return "a0"
+        if valid_actions:
+            candidates = [a for a in actions if a in valid_actions]
+            if candidates:
+                return max(candidates, key=lambda a: actions[a])
+            return valid_actions[0]
+        return max(actions, key=actions.get)
+
+    def decay_exploration(self):
+        self.exploration_rate = max(
+            self.config.min_exploration,
+            self.exploration_rate * self.config.exploration_decay
+        )
+        self.episode_count += 1
+
+    @property
+    def total_rewards(self) -> float:
+        return self._metrics.total_steps * 0.1
 
     def choose_action(self, state: str) -> str:
         actions = self._q_table.get(state, {})

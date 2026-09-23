@@ -267,13 +267,20 @@ class ProtocolBridge:
         self._state = BridgeState.CONNECTED
 
     def connect_external(self, protocol_type: ProtocolType,
-                         endpoint: str) -> bool:
+                         endpoint: str) -> str:
+        adapter = ExternalAdapter(protocol_type=protocol_type, endpoint=endpoint)
+        self._registry.register_adapter(adapter)
+        adapter.connect()
         self._state = BridgeState.CONNECTED
-        return True
+        return adapter.adapter_id
 
-    def disconnect_external(self, protocol_type: ProtocolType) -> bool:
-        self._state = BridgeState.DISCONNECTED
-        return True
+    def disconnect_external(self, adapter_id: str) -> bool:
+        adapter = self._registry.get_adapter(adapter_id)
+        if adapter:
+            adapter.disconnect()
+            self._state = BridgeState.DISCONNECTED
+            return True
+        return False
 
     def forward_token(self, token_id: str, payload: dict, target_protocol: Optional[ProtocolType] = None) -> dict:
         """Forward a token through the bridge."""
