@@ -74,8 +74,8 @@ class TestLearningStateEnum(unittest.TestCase):
     def test_enum_values(self):
         """All four learning states exist."""
         states = [s.name for s in LearningState]
-        self.assertIn("EXPLOITATION", states)
-        self.assertIn("EXPLORATION", states)
+        self.assertIn("EXPLORING", states)
+        self.assertIn("EXPLOITING", states)
         self.assertIn("CONVERGED", states)
         self.assertIn("DECAYING", states)
 
@@ -90,6 +90,7 @@ class TestCompressionActionEnum(unittest.TestCase):
     def test_enum_values(self):
         """All four compression actions exist."""
         actions = [a.name for a in CompressionAction]
+        self.assertIn("NONE", actions)
         self.assertIn("INCREASE", actions)
         self.assertIn("DECREASE", actions)
         self.assertIn("MAINTAIN", actions)
@@ -97,7 +98,7 @@ class TestCompressionActionEnum(unittest.TestCase):
 
     def test_enum_count(self):
         """Four compression actions."""
-        self.assertEqual(len(list(CompressionAction)), 4)
+        self.assertEqual(len(list(CompressionAction)), 5)
 
 
 class TestRewardSignalEnum(unittest.TestCase):
