@@ -76,6 +76,7 @@ class ExternalAdapter:
     def connect(self) -> bool:
         self.state = AdapterState.CONNECTED
         self.last_activity = time.time()
+        self.connected_at = time.time()
         return True
 
     def disconnect(self) -> bool:
@@ -116,6 +117,7 @@ class ExternalAdapter:
         self.endpoint = endpoint
         self.state = state
         self.last_activity = time.time()
+        self.connected_at = time.time()
         self.message_count = 0
         self.error_count = 0
 
