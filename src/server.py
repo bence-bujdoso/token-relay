@@ -567,7 +567,56 @@ class _Handler(BaseHTTPRequestHandler):
     _app = None
 
     def _call_llm(self, prompt, api_key, url, max_tokens=None):
-        return self._app._call_llm(prompt, api_key, url, max_tokens)
+        """Make a real LLM call via OpenRouter API"""
+        import time, json, urllib.request, re as _re
+        t0 = time.perf_counter()
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:8081',
+            'X-Title': 'TokenRelay Benchmark'
+        }
+        payload = {
+            'model': '9router-combo',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.7,
+            'stream': False,
+            'reasoning_effort': 'none'
+        }
+        if max_tokens is not None:
+            payload['max_tokens'] = max_tokens
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            raw = resp.read().decode()
+            resp.close()
+            json_str = None
+            sse_match = _re.search(r'data:\s*(\{.*\})', raw, _re.DOTALL)
+            if sse_match:
+                json_str = sse_match.group(1)
+            elif raw.strip() == '[DONE]':
+                return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'response_text': '', 'execution_time_ms': 0}
+            else:
+                json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
+                else:
+                    json_str = raw
+            result = json.loads(json_str)
+            usage = result.get('usage', {})
+            message = result.get('choices', [{}])[0].get('message', {})
+            if message.get('content') is not None:
+                resp_text = message['content']
+            elif message.get('reasoning_content') is not None:
+                resp_text = message['reasoning_content']
+            elif message.get('reasoning') is not None:
+                resp_text = message['reasoning']
+            else:
+                resp_text = ''
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+            return {'prompt_tokens': usage.get('prompt_tokens', 0), 'completion_tokens': usage.get('completion_tokens', 0), 'total_tokens': usage.get('total_tokens', 0), 'response_text': resp_text, 'execution_time_ms': elapsed_ms}
+        except Exception as e:
+            return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'response_text': str(e), 'execution_time_ms': 0}
 
     def _relay_pipeline(self, prompt):
         return self._app._relay_pipeline(prompt)
