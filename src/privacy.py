@@ -53,6 +53,8 @@ class ZKProof:
     witness_hash: str = ""
     timestamp: float = field(default_factory=time.time)
     prover_id: str = ""
+    verified: bool = False
+    revoked: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -198,13 +200,14 @@ class ZKProofVerifier:
     def issue_proof(self, public_inputs: Dict[str, Any],
                     witness_hash: str, prover_id: str = "") -> ZKProof:
         proof = ZKProof(public_inputs=public_inputs, witness_hash=witness_hash, prover_id=prover_id)
-        proof.commitment = self._compute_commitment(witness_hash, public_inputs)
-        proof.challenge = self._compute_challenge(proof.proof_id)
-        proof.response = self._compute_response(proof.witness_hash, proof.challenge)
+        # Compute commitment, challenge, response
+        commitment_data = str(public_inputs) + witness_hash
+        proof.commitment = hashlib.sha256(commitment_data.encode()).hexdigest()
+        # Generate challenge
+        import secrets
+        proof.challenge = secrets.token_hex(16)
+        proof.response = hashlib.sha256((witness_hash + proof.challenge).encode()).hexdigest()
         self._proofs[proof.proof_id] = proof
-        self._proof_index[proof.commitment].append(proof.proof_id)
-        self._total_issued += 1
-        return proof
         self._proof_index[proof.commitment].append(proof.proof_id)
         self._total_issued += 1
         return proof
@@ -223,11 +226,16 @@ class ZKProofVerifier:
     def get_proof_status(self, proof_id: str) -> ProofStatus:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
+        if proof.timestamp + self._proof_ttl < time.time():
+            return ProofStatus.EXPIRED
+        if proof.revoked:
+            return ProofStatus.REVOKED
         return ProofStatus.VALID
 
     def revoke_proof(self, proof_id: str) -> bool:
         if proof_id in self._proofs:
-            self._proofs[proof_id] = None
+            self._proofs[proof_id].verified = True
+            self._proofs[proof_id].revoked = True
             return True
         return False
 
