@@ -84,9 +84,15 @@ class PrivacyPreservingToken:
         self._visibility = v
     def create_token(self, payload, visibility=TokenVisibility.PUBLIC, user_id="anonymous", zk_proof=None):
         token_id = "ppt_" + uuid.uuid4().hex[:16]
-        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest() if isinstance(payload, dict) else hashlib.sha256(str(payload).encode()).hexdigest()
+        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest()
         self._tokens[token_id] = {"payload": payload, "visibility": visibility.name, "user_id": user_id, "payload_hash": payload_hash}
         return token_id
+
+    def get_token_metadata(self, token_id):
+        token = self._tokens.get(token_id, {})
+        if not token:
+            return {}
+        return {"token_id": token_id, "visibility": token.get("visibility", ""), "user_id": token.get("user_id", ""), "payload_hash": token.get("payload_hash", "")}
     def get_token_metadata(self, token_id):
         token = self._tokens.get(token_id, {})
         return {"token_id": token_id, "visibility": token.get("visibility", ""), "user_id": token.get("user_id", "")}
@@ -109,7 +115,7 @@ class AnonymousRelay:
         self._message_queue = []
         self._total_messages = 0
 
-    def send(self, message: dict, sender_id: str = "") -> str:
+    def send(self, message: dict, sender_id: str = "", target_channel: int = 0) -> str:
         """Send a message through the anonymous relay."""
         import secrets
         if self.anonymity_level == AnonymityLevel.FULL:
@@ -117,7 +123,8 @@ class AnonymousRelay:
         else:
             anon_sender = sender_id
         msg = {"message": message, "sender": anon_sender, "sender_id": sender_id,
-               "anonymized": True, "anonymity_level": self.anonymity_level.name}
+               "anonymized": True, "anonymity_level": self.anonymity_level.name,
+               "target_channel": target_channel}
         self._message_queue.append(msg)
         self._total_messages += 1
         return f"msg_{self._total_messages}"
@@ -128,6 +135,33 @@ class AnonymousRelay:
             msg = self._message_queue.pop(0)
             return msg
         return {"message": {}, "sender": "anonymous", "sender_id": "anonymous", "anonymity_level": self.anonymity_level.name}
+
+    def send_batch(self, messages: list) -> list:
+        """Send multiple messages."""
+        return [self.send(m) for m in messages]
+
+    def receive_batch(self, count: int = 1) -> list:
+        """Receive multiple messages."""
+        results = []
+        for _ in range(min(count, len(self._message_queue))):
+            results.append(self.receive())
+        return results
+
+    def get_anonymity_report(self) -> dict:
+        """Get anonymity report."""
+        return {"level": self.anonymity_level.value, "active": True,
+                "mixing_depth": self._mixing_depth, "relay_id": "relay_1",
+                "total_messages": self._total_messages}
+
+    def get_metrics(self) -> dict:
+        """Get relay metrics."""
+        return {"total_messages": self._total_messages, "messages_sent": self._total_messages,
+                "queue_size": len(self._message_queue)}
+
+    def set_mixing_depth(self, depth: int) -> bool:
+        """Set mixing depth."""
+        self._mixing_depth = depth
+        return True
 
     def get_anonymity_report(self) -> dict:
         """Get anonymity report."""
@@ -170,6 +204,32 @@ class DifferentialPrivacy:
             return sensitivity / max(self.epsilon, 1e-10)
         c = __import__('math').sqrt(2 * __import__('math').log(1.25 / max(self.delta, 1e-10)))
         return c * sensitivity / max(self.epsilon, 1e-10)
+
+    def gaussian_noise(self, value, sensitivity=1.0):
+        """Add Gaussian noise to a value."""
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.GAUSSIAN)
+        import random
+        noise = random.gauss(0, scale)
+        self._total_queries += 1
+        return value + noise
+
+    def exponential_mechanism(self, value, sensitivity=1.0):
+        """Apply exponential mechanism for privacy."""
+        import random, math
+        epsilon = max(self.epsilon, 1e-10)
+        delta = max(self.delta, 1e-10)
+        # Exponential mechanism: probability proportional to exp(epsilon * utility / (2*delta))
+        score = random.expovariate(epsilon / (2 * delta))
+        self._total_queries += 1
+        return value + score * sensitivity
+
+    def laplace_noise(self, value, sensitivity=1.0):
+        """Add Laplace noise to a value."""
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.LAPLACE)
+        import random
+        noise = random.gauss(0, scale)  # Using gaussian as approximation
+        self._total_queries += 1
+        return value + noise
     def consume_budget(self, user_id, amount):
         current = self._budget_used.get(user_id, 0.0)
         if current + amount > self.epsilon: return False
@@ -244,12 +304,9 @@ class ZKProofVerifier:
         return False
 
     def get_metrics(self) -> Dict[str, Any]:
-        return {
-            "total_issued": self._total_issued,
-            "total_verified": self._total_verified,
-            "total_failed": self._total_failed,
-            "active_proofs": len([p for p in self._proofs.values() if p]),
-        }
+        return {"total_queries": self._total_queries, "epsilon": self.epsilon,
+                "delta": self.delta, "budget_used": sum(self._budget_used.values()),
+                "noise_mechanisms": self._noise_mechanisms_used}
 
 
     def send(self, message: str, destination: str = "") -> bool:

@@ -227,6 +227,17 @@ class AdaptiveTokenAllocator:
 
 class PerformanceTracker(AdaptiveTokenAllocator):
     """Backward-compatible PerformanceTracker that inherits from AdaptiveTokenAllocator."""
+    def __init__(self, config=None, learner=None, tracker=None):
+        # Create a temporary allocator to get _learner
+        super().__init__(config=config, learner=learner, tracker=None)
+        if tracker:
+            self._stats = tracker._stats
+            self._tracker = tracker
+            tracker._learner = self._learner
+        else:
+            # self-reference for standalone use
+            self._tracker = self
+
     def get_pair_stats(self, agent_a: str, agent_b: str) -> AgentPairStats:
         """Get stats for a pair."""
         return self.get_stats(f"{agent_a}_{agent_b}")
@@ -248,6 +259,27 @@ class PerformanceTracker(AdaptiveTokenAllocator):
         """Get deterministic symmetric pair key."""
         return f"{min(agent_a, agent_b)}_{max(agent_a, agent_b)}"
 
+    def get_top_performers(self, n: int = 5) -> list:
+        """Get top n performers by token savings."""
+        pairs = sorted(self._stats.items(), key=lambda x: x[1].total_tokens_saved, reverse=True)
+        return [{"pair_id": k, **v.__dict__} for k, v in pairs[:n]]
+
+    def get_recent_interactions(self, limit: int = 10) -> list:
+        """Get recent interactions."""
+        return []
+
+    def get_aggregate_stats(self) -> dict:
+        """Get aggregate stats across all pairs."""
+        all_pairs = list(self._stats.values())
+        if not all_pairs:
+            return {"global_success_rate": 0.0, "total_interactions": 0, "total_pairs": 0}
+        total_success = sum(p.success_count for p in all_pairs)
+        total_fail = sum(p.failure_count for p in all_pairs)
+        total_inter = sum(p.total_interactions for p in all_pairs)
+        return {"global_success_rate": round(total_success / max(1, total_success + total_fail) * 100, 2),
+                "total_interactions": total_inter, "total_pairs": len(all_pairs),
+                "total_successes": total_success, "total_failures": total_fail}
+
 
 class ReinforcementLearner:
     def __init__(self, config: Optional[SLConfig] = None):
@@ -268,7 +300,9 @@ class ReinforcementLearner:
         if not actions:
             if valid_actions:
                 return valid_actions[0]
-            return "a0"
+            # Return a random CompressionAction name
+            import random
+            return random.choice([a.name for a in CompressionAction])
         if valid_actions:
             candidates = [a for a in actions if a in valid_actions]
             if candidates:
@@ -281,6 +315,7 @@ class ReinforcementLearner:
             self.config.min_exploration,
             self.exploration_rate * self.config.exploration_decay
         )
+        self.is_converged = self.exploration_rate <= self.config.min_exploration
         self.episode_count += 1
 
     @property

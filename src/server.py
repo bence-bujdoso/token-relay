@@ -157,7 +157,7 @@ class TokenRelayServer:
         return {"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]}
 
     def _handle_metrics(self):
-        """Return server metrics: uptime, request count, memory usage."""
+        """Return server metrics JSON string."""
         import resource as _res
         uptime = time.time() - self._start_time
         mem = _res.getrusage(_res.RUSAGE_SELF).ru_maxrss / 1024
@@ -167,22 +167,14 @@ class TokenRelayServer:
                 cache_stats = self._cache.get_stats()
         except Exception:
             pass
-        body = json.dumps({"status": "healthy", "uptime_seconds": round(uptime, 2),
+        return json.dumps({"status": "healthy", "uptime_seconds": round(uptime, 2),
             "request_count": self._request_count, "memory_usage_mb": round(mem, 2),
             "peak_memory_mb": self._peak_memory_mb, "cache": cache_stats})
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body.encode())
 
     def _increment_request(self):
         """Track total request count."""
         self._request_count += 1
 
-
-    def _handle_prompt_benchmark(self):
-        """Handle prompt-based benchmark: compare traditional LLM vs TokenRelay."""
-        length = int(self.headers.get('Content-Length', 0))
 
     def _relay_pipeline(self, prompt):
         """Run the TokenRelay v3 pipeline: subagent decomposition instruction."""
@@ -703,78 +695,6 @@ class TokenRelayServer:
         del body
         gc.collect()
 
-    def do_POST(self):
-        try:
-            if self.path == '/api/prompt-benchmark-stream':
-                self._app._increment_request()
-                self._handle_prompt_benchmark_stream()
-            elif self.path == '/api/prompt-benchmark':
-                self._app._increment_request()
-                self._app._handle_prompt_benchmark()
-            elif self.path == '/api/pipeline-details':
-                self._app._increment_request()
-                self._handle_pipeline_details()
-            elif self.path == '/api/swarm-benchmark':
-                self._app._increment_request()
-                self._handle_swarm_benchmark()
-            elif self.path == '/benchmark' or self.path == '/api/benchmark':
-                length = int(self.headers.get('Content-Length', 0))
-                data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
-                duration = data.get('duration', 10)
-                protocol = data.get('protocol', 'v4')
-                real_llm = data.get('real_llm', '0')
-
-                if real_llm == '1':
-                    time.sleep(duration)
-                    iterations = max(duration * 10, 50)
-                    base_latency = random.randint(500, 2000)
-                else:
-                    iterations = 50
-                    base_latency = random.randint(20, 200)
-                results = []
-                for i in range(5):
-                    mem = random.randint(100, 500)
-                    avg_lat = base_latency + random.randint(-20, 50)
-                    p50 = max(1, avg_lat - random.randint(10, 50))
-                    p95 = avg_lat + random.randint(50, 200)
-                    p99 = avg_lat + random.randint(150, 400)
-                    results.append({
-                        "max_msg": 1000 * (i + 1),
-                        "iterations": iterations,
-                        "duration": duration,
-                        "memory_delta_kb": mem,
-                        "token_savings_pct": random.uniform(75, 95),
-                        "savings_pct": random.uniform(75, 95),
-                        "latency_ms": avg_lat,
-                        "protocol": protocol,
-                        "latency_stats": {"p50": p50, "p95": p95, "p99": p99},
-                        "avg_latency_ms": avg_lat,
-                        "message_count": 1000 * (i + 1),
-                        "throughput_per_sec": random.randint(500, 5000)
-                    })
-
-                trad_multiplier = 50 if real_llm == '1' else 1
-                trad_tokens = int((random.randint(20000, 50000) * duration * trad_multiplier) / 10)
-                relay_tokens = int((random.randint(1000, 3000) * duration) / 10)
-
-                body = json.dumps({"status":"success","duration":duration,
-                    "protocol":protocol,"real_llm":real_llm,"result":"benchmark_complete",
-                    "scalability_results":results,
-                    "traditional_tokens":trad_tokens,
-                    "token_relay_tokens":relay_tokens})
-                self.send_response(200); self.send_header('Content-Type','application/json')
-                self.end_headers(); self.wfile.write(body.encode())
-                del results, body
-            else:
-                self.send_response(404); self.end_headers()
-        finally:
-            # Memory enforcement after every POST request
-            self._app._check_memory()
-            gc.collect()
-
-    def log_message(self, format, *args): pass
-
-
 class _Handler(BaseHTTPRequestHandler):
     _app = None
 
@@ -793,7 +713,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/api/metrics':
-            self._app._handle_metrics()
+            body = self._app._handle_metrics()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
             return
         elif self.path == '/status/v4':
             body = json.dumps({"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]})
