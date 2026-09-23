@@ -59,6 +59,8 @@ class AdapterConfig:
     heartbeat_interval: int = 30
     auth_token: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class ExternalAdapter:
     adapter_id: str
@@ -67,6 +69,7 @@ class ExternalAdapter:
     endpoint: str = ""
     state: AdapterState = AdapterState.REGISTERED
     last_activity: float = field(default_factory=time.time)
+    connected_at: float = field(default_factory=time.time)
     message_count: int = 0
     error_count: int = 0
 
