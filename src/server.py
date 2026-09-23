@@ -566,6 +566,17 @@ class TokenRelayServer:
 class _Handler(BaseHTTPRequestHandler):
     _app = None
 
+    def _get_cache(self):
+        try:
+            if self._app._cache is None:
+                epc_mod = _get_epc()
+                EPCConfig = epc_mod.EPCConfig
+                EdgeCache = epc_mod.EdgeCache
+                self._app._cache = EdgeCache(node_id="benchmark", config=EPCConfig(default_ttl=3600, max_entries=50))
+            return self._app._cache
+        except Exception:
+            return None
+
     def __getattr__(self, name):
         if name.startswith('_'):
             return getattr(self._app, name)
@@ -840,3 +851,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    def _get_cache(self):
+        """Lazy-load EdgeCache with reduced max_entries to save memory."""
+        try:
+            if self._app._cache is None:
+                epc_mod = _get_epc()
+                EPCConfig = epc_mod.EPCConfig
+                EdgeCache = epc_mod.EdgeCache
+                self._app._cache = EdgeCache(node_id="benchmark", config=EPCConfig(default_ttl=3600, max_entries=50))
+            return self._app._cache
+        except Exception:
+            return None
