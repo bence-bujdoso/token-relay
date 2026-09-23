@@ -67,6 +67,13 @@ from atc import IntentClassifier, AdaptiveCompressor, ATCConfig
 from teq import TokenBilling, QoSTier, TEQConfig
 from epc import EdgeCache, CacheManager, EPCConfig
 
+# v4 - New modules
+from ab_testing import ABTestRunner, ExperimentRegistry, Experiment, ExperimentStatus, StatisticalTest, MetricsTracker
+from webhook import WebhookManager, WebhookEvent
+from session_memory import SessionManager
+from swarm_dashboard import SwarmDashboard
+from token_savings import SavingsTracker
+
 __all__ = [
     # v4 - Swarm
     "SwarmAgent", "SwarmCoordinator", "CollectiveDecision", "SelfOrganization",
@@ -107,5 +114,12 @@ __all__ = [
     "IntentClassifier", "AdaptiveCompressor", "ATCConfig",
     "TokenBilling", "QoSTier", "TEQConfig",
     "EdgeCache", "CacheManager", "EPCConfig",
+    # v4 - New modules
+    "ABTestRunner", "ExperimentRegistry", "Experiment", "ExperimentStatus",
+    "StatisticalTest", "MetricsTracker",
+    "WebhookManager", "WebhookEvent",
+    "SessionManager",
+    "SwarmDashboard",
+    "SavingsTracker",
     "__version__", "__description__",
 ]

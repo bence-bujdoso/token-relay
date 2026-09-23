@@ -331,7 +331,8 @@
 
             els.promptResults.style.display = 'grid';
             els.promptWin.textContent = comp.token_savings_pct + '%';
-            els.promptWinLabel.textContent = 'TokenRelay saves this many tokens!';
+            if (comp.token_savings_pct < 0) { els.promptWin.style.color = 'var(--error)'; } else { els.promptWin.style.color = 'var(--green)'; }
+            els.promptWinLabel.textContent = (comp.token_savings_pct < 0) ? 'Traditional LLM saves this many tokens!' : 'TokenRelay saves this many tokens!';
             els.promptDetails.textContent = `Token savings: ${comp.token_savings_pct}% | Time savings: ${comp.time_savings_pct}% | Speedup: ${comp.speedup_x}x | Tokens saved: ${comp.tokens_saved}`;
 
             // Display responses as TEXT (never render HTML)

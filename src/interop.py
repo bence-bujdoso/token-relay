@@ -272,84 +272,6 @@ class TranslationRule:
             self.default_values = dict(self.default_values)
 
 
-class ProtocolBridge:
-    def __init__(self, config: Optional[BridgeConfig] = None,
-                 adapter_registry: Optional[AdapterRegistry] = None,
-                 car_router: Optional[CARRouter] = None,
-                 teq_billing: Optional[TokenBilling] = None):
-        self.config = config or BridgeConfig()
-        self._registry = adapter_registry or AdapterRegistry()
-        self._car_router = car_router or CARRouter()
-        self._teq_billing = teq_billing or TokenBilling()
-        self._state = BridgeState.DISCONNECTED
-        self._event_bus = EventBus()
-        self._broker = MessageBroker()
-        self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
-
-    def initialize(self):
-        self._state = BridgeState.CONNECTED
-
-    def connect_external(self, protocol_type: ProtocolType,
-                         endpoint: str) -> str:
-        adapter = ExternalAdapter(protocol_type=protocol_type, endpoint=endpoint)
-        self._registry.register_adapter(adapter)
-        adapter.connect()
-        self._state = BridgeState.CONNECTED
-        return adapter.adapter_id
-
-    def disconnect_external(self, adapter_id: str) -> bool:
-        adapter = self._registry.get_adapter(adapter_id)
-        if adapter:
-            adapter.disconnect()
-            self._state = BridgeState.DISCONNECTED
-            return True
-        return False
-
-    def forward_token(self, token_id: str, payload: dict, target_protocol: Optional[ProtocolType] = None, qos_tier: Optional[str] = None) -> dict:
-        """Forward a token through the bridge."""
-        self._total_forwarded = getattr(self, '_total_forwarded', 0) + 1
-        adapters = self._registry.get_adapters_by_protocol(target_protocol) if target_protocol else []
-        if not adapters:
-            return {"status": "error", "token_id": token_id, "message": "no active adapter"}
-        return {"status": "forwarded", "token_id": token_id, "target_protocol": target_protocol.value if target_protocol else "unknown", "qos_tier": qos_tier}
-
-    def receive_external(self, protocol_type: ProtocolType, message: dict) -> dict:
-        self._total_received = getattr(self, '_total_received', 0) + 1
-        return {"status": "received", "payload": message, "source_protocol": protocol_type.value}
-
-    def set_bidirectional(self, bidirectional: bool) -> None:
-        self._bidirectional = bidirectional
-        self.config.enable_bidirectional = bidirectional
-
-    def pause(self):
-        self._state = BridgeState.PAUSED
-
-    def resume(self):
-        self._state = BridgeState.CONNECTED
-
-    @property
-    def _state(self):
-        return self.__state
-
-    @_state.setter
-    def _state(self, value):
-        self.__state = value
-
-    @property
-    def registry(self):
-        return self._registry
-
-    def get_bridge_stats(self) -> Dict[str, Any]:
-        return {
-            "total_forwarded": getattr(self, '_total_forwarded', 0),
-            "total_received": getattr(self, '_total_received', 0),
-            "total_translated": getattr(self, '_total_translated', 0),
-            "uptime_seconds": getattr(self, '_uptime_start', 0),
-            "adapter_stats": self._registry.get_stats(),
-            "state": self._state.value if hasattr(self._state, 'value') else str(self._state)
-        }
-
-
 class BridgeConfig:
     def __init__(self, max_adapters: int = 10, auto_reconnect: bool = True,
                  enable_bidirectional: bool = True):
@@ -441,6 +363,84 @@ class CrossProtocolGateway:
 
     def get_supported_protocols(self) -> List[str]:
         return self._supported_protocols
+
+
+class ProtocolBridge:
+    def __init__(self, config: Optional[BridgeConfig] = None,
+                 adapter_registry: Optional[AdapterRegistry] = None,
+                 car_router: Optional[CARRouter] = None,
+                 teq_billing: Optional[TokenBilling] = None):
+        self.config = config or BridgeConfig()
+        self._registry = adapter_registry or AdapterRegistry()
+        self._car_router = car_router or CARRouter()
+        self._teq_billing = teq_billing or TokenBilling()
+        self._state = BridgeState.DISCONNECTED
+        self._event_bus = EventBus()
+        self._broker = MessageBroker()
+        self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+
+    def initialize(self):
+        self._state = BridgeState.CONNECTED
+
+    def connect_external(self, protocol_type: ProtocolType,
+                         endpoint: str) -> str:
+        adapter = ExternalAdapter(protocol_type=protocol_type, endpoint=endpoint)
+        self._registry.register_adapter(adapter)
+        adapter.connect()
+        self._state = BridgeState.CONNECTED
+        return adapter.adapter_id
+
+    def disconnect_external(self, adapter_id: str) -> bool:
+        adapter = self._registry.get_adapter(adapter_id)
+        if adapter:
+            adapter.disconnect()
+            self._state = BridgeState.DISCONNECTED
+            return True
+        return False
+
+    def forward_token(self, token_id: str, payload: dict, target_protocol: Optional[ProtocolType] = None, qos_tier: Optional[str] = None) -> dict:
+        """Forward a token through the bridge."""
+        self._total_forwarded = getattr(self, '_total_forwarded', 0) + 1
+        adapters = self._registry.get_adapters_by_protocol(target_protocol) if target_protocol else []
+        if not adapters:
+            return {"status": "error", "token_id": token_id, "message": "no active adapter"}
+        return {"status": "forwarded", "token_id": token_id, "target_protocol": target_protocol.value if target_protocol else "unknown", "qos_tier": qos_tier}
+
+    def receive_external(self, protocol_type: ProtocolType, message: dict) -> dict:
+        self._total_received = getattr(self, '_total_received', 0) + 1
+        return {"status": "received", "payload": message, "source_protocol": protocol_type.value}
+
+    def set_bidirectional(self, bidirectional: bool) -> None:
+        self._bidirectional = bidirectional
+        self.config.enable_bidirectional = bidirectional
+
+    def pause(self):
+        self._state = BridgeState.PAUSED
+
+    def resume(self):
+        self._state = BridgeState.CONNECTED
+
+    @property
+    def _state(self):
+        return self.__state
+
+    @_state.setter
+    def _state(self, value):
+        self.__state = value
+
+    @property
+    def registry(self):
+        return self._registry
+
+    def get_bridge_stats(self) -> Dict[str, Any]:
+        return {
+            "total_forwarded": getattr(self, '_total_forwarded', 0),
+            "total_received": getattr(self, '_total_received', 0),
+            "total_translated": getattr(self, '_total_translated', 0),
+            "uptime_seconds": getattr(self, '_uptime_start', 0),
+            "adapter_stats": self._registry.get_stats(),
+            "state": self._state.value if hasattr(self._state, 'value') else str(self._state)
+        }
 
 
 class UniversalTranslator:

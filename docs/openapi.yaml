@@ -1,0 +1,649 @@
+openapi: "3.0.3"
+info:
+  title: "TokenRelay v4 API"
+  description: "Autonomous Multi-Agent Framework with Swarm Intelligence, Self-Learning, Privacy, and Cross-Protocol Interoperability"
+  version: "4.0.0"
+  contact:
+    name: "TokenRelay Team"
+    email: "bence.bujdoso@example.com"
+
+servers:
+  - url: "http://localhost:8081"
+    description: "Local development server"
+
+paths:
+  /health:
+    get:
+      summary: "Server health check"
+      operationId: "healthCheck"
+      responses:
+        "200":
+          description: "Server is healthy"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  version:
+                    type: string
+                    example: "4.0.0"
+
+  /metrics/v4:
+    get:
+      summary: "V4 module metrics"
+      operationId: "getV4Metrics"
+      responses:
+        "200":
+          description: "V4 module metrics"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  modules_loaded:
+                    type: array
+                    items:
+                      type: string
+                  pipeline:
+                    type: string
+                  status:
+                    type: string
+
+  /status/v4:
+    get:
+      summary: "V4 server status"
+      operationId: "getV4Status"
+      responses:
+        "200":
+          description: "Server status"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  port:
+                    type: integer
+                  running:
+                    type: boolean
+                  pipeline:
+                    type: string
+                  modules:
+                    type: array
+                    items:
+                      type: string
+
+  /api/metrics:
+    get:
+      summary: "Server metrics"
+      operationId: "getServerMetrics"
+      responses:
+        "200":
+          description: "Server metrics including uptime, memory, cache"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  uptime_seconds:
+                    type: number
+                  request_count:
+                    type: integer
+                  memory_usage_mb:
+                    type: number
+                  peak_memory_mb:
+                    type: number
+                  cache:
+                    type: object
+
+  /api/prompt-benchmark:
+    post:
+      summary: "Run prompt benchmark"
+      operationId: "runPromptBenchmark"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+                real_llm:
+                  type: string
+                  enum: ["0", "1"]
+      responses:
+        "200":
+          description: "Benchmark results comparing Traditional LLM vs TokenRelay"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  result:
+                    type: string
+                  pipeline:
+                    type: string
+                  prompt:
+                    type: string
+                  prompt_length_chars:
+                    type: integer
+                  relay_pipeline:
+                    type: object
+                  traditional:
+                    type: object
+                  token_relay:
+                    type: object
+                  comparison:
+                    type: object
+                    properties:
+                      token_savings_pct:
+                        type: number
+                      time_savings_pct:
+                        type: number
+                      speedup_x:
+                        type: number
+                      tokens_saved:
+                        type: integer
+
+  /api/pipeline-details:
+    post:
+      summary: "Get full V3 pipeline details"
+      operationId: "getPipelineDetails"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+      responses:
+        "200":
+          description: "Full pipeline execution details"
+
+  /api/prompt-benchmark-stream:
+    post:
+      summary: "Prompt benchmark with progressive SSE streaming"
+      operationId: "runPromptBenchmarkStream"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+      responses:
+        "200":
+          description: "Server-Sent Events stream"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/swarm-benchmark:
+    post:
+      summary: "Run swarm benchmark with parallel agents"
+      operationId: "runSwarmBenchmark"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+      responses:
+        "200":
+          description: "Swarm benchmark results"
+
+  /api/benchmark:
+    post:
+      summary: "Run protocol benchmark"
+      operationId: "runBenchmark"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                duration:
+                  type: integer
+                protocol:
+                  type: string
+                real_llm:
+                  type: string
+                  enum: ["0", "1"]
+      responses:
+        "200":
+          description: "Benchmark results"
+
+  /api/ab-tests:
+    get:
+      summary: "List all A/B experiments"
+      operationId: "listABTests"
+      parameters:
+        - name: "status"
+          in: "query"
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "List of experiments"
+    post:
+      summary: "Create a new A/B experiment"
+      operationId: "createABTest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExperimentCreate"
+      responses:
+        "200":
+          description: "Created experiment"
+
+  /api/ab-tests/{experiment_id}:
+    get:
+      summary: "Get experiment details"
+      operationId: "getABTest"
+      parameters:
+        - name: "experiment_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Experiment details"
+    post:
+      summary: "Complete an experiment with results"
+      operationId: "completeABTest"
+      parameters:
+        - name: "experiment_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Experiment results"
+
+  /api/webhooks:
+    get:
+      summary: "List all webhooks"
+      operationId: "listWebhooks"
+      responses:
+        "200":
+          description: "List of webhooks"
+    post:
+      summary: "Register a new webhook"
+      operationId: "registerWebhook"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookCreate"
+      responses:
+        "200":
+          description: "Created webhook"
+
+  /api/webhooks/{webhook_id}:
+    get:
+      summary: "Get webhook details"
+      operationId: "getWebhook"
+      parameters:
+        - name: "webhook_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Webhook details"
+    delete:
+      summary: "Delete a webhook"
+      operationId: "deleteWebhook"
+      parameters:
+        - name: "webhook_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Deletion result"
+
+  /api/webhooks/{webhook_id}/deliver:
+    post:
+      summary: "Deliver an event to a webhook"
+      operationId: "deliverWebhook"
+      parameters:
+        - name: "webhook_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: "Delivery result"
+
+  /api/sessions:
+    get:
+      summary: "List all sessions"
+      operationId: "listSessions"
+      parameters:
+        - name: "active_only"
+          in: "query"
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: "List of sessions"
+    post:
+      summary: "Create a new session"
+      operationId: "createSession"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        "200":
+          description: "Created session"
+
+  /api/sessions/{session_id}:
+    get:
+      summary: "Get session with message history"
+      operationId: "getSession"
+      parameters:
+        - name: "session_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Session with messages"
+    delete:
+      summary: "Delete a session"
+      operationId: "deleteSession"
+      parameters:
+        - name: "session_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Deletion result"
+
+  /api/sessions/{session_id}/messages:
+    post:
+      summary: "Add a message to a session"
+      operationId: "addMessage"
+      parameters:
+        - name: "session_id"
+          in: "path"
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                content:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        "200":
+          description: "Message added"
+
+  /benchmark.html:
+    get:
+      summary: "Protocol benchmark dashboard"
+      operationId: "getBenchmarkPage"
+
+  /prompt-benchmark.html:
+    get:
+      summary: "Prompt benchmark page"
+      operationId: "getPromptBenchmarkPage"
+
+components:
+  schemas:
+    Experiment:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        hypothesis:
+          type: string
+        control_variant:
+          type: string
+        treatment_variant:
+          type: string
+        metrics:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        comparison_type:
+          type: string
+        created_at:
+          type: number
+
+    ExperimentCreate:
+      type: object
+      required:
+        - name
+        - hypothesis
+        - control_variant
+        - treatment_variant
+      properties:
+        name:
+          type: string
+        hypothesis:
+          type: string
+        control_variant:
+          type: string
+        treatment_variant:
+          type: string
+        comparison_type:
+          type: string
+          enum: [swarm_vs_direct, agent_count_6_vs_8, compression_level_50_vs_90]
+        metrics:
+          type: array
+          items:
+            type: string
+        config:
+          type: object
+
+    ExperimentResult:
+      type: object
+      properties:
+        experiment_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        control_summary:
+          type: object
+        treatment_summary:
+          type: object
+        p_value:
+          type: number
+        significant:
+          type: boolean
+        confidence_interval:
+          type: array
+          items:
+            type: number
+
+    Webhook:
+      type: object
+      properties:
+        webhook_id:
+          type: string
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        created_at:
+          type: number
+
+    WebhookCreate:
+      type: object
+      required:
+        - url
+        - events
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+            enum: [task_complete, task_failed, swarm_consensus_reached, benchmark_complete]
+        secret:
+          type: string
+
+    WebhookDelivery:
+      type: object
+      properties:
+        success:
+          type: boolean
+        webhook_id:
+          type: string
+        event:
+          type: string
+        status_code:
+          type: integer
+        attempt:
+          type: integer
+        error:
+          type: string
+
+    Session:
+      type: object
+      properties:
+        session_id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: number
+        updated_at:
+          type: number
+        is_active:
+          type: boolean
+
+    SessionDetail:
+      type: object
+      properties:
+        session:
+          $ref: "#/components/schemas/Session"
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              message_id:
+                type: string
+              role:
+                type: string
+              content:
+                type: string
+              timestamp:
+                type: number
+
+    PipelineDetails:
+      type: object
+      properties:
+        status:
+          type: string
+        result:
+          type: string
+        prompt:
+          type: string
+        prompt_length_chars:
+          type: integer
+        prediction:
+          type: object
+        v3_pipeline:
+          type: object
+        edge_cache:
+          type: object
+
+    SwarmBenchmarkResult:
+      type: object
+      properties:
+        status:
+          type: string
+        result:
+          type: string
+        traditional:
+          type: object
+        token_relay:
+          type: object
+        swarm:
+          type: object
+        comparison:
+          type: object
+        pipeline:
+          type: string
+
+    BenchmarkResult:
+      type: object
+      properties:
+        status:
+          type: string
+        duration:
+          type: integer
+        protocol:
+          type: string
+        real_llm:
+          type: string
+        result:
+          type: string
+        scalability_results:
+          type: array
+        traditional_tokens:
+          type: integer
+        token_relay_tokens:
+          type: integer

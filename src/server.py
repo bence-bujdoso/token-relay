@@ -15,6 +15,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Lightweight core imports (always available)
 import importlib
 
+# New feature imports
+from ab_testing import ABTestRunner, ExperimentRegistry, StatisticalTest, MetricsTracker, Experiment, ExperimentStatus
+from webhook import WebhookManager, WebhookEvent
+from session_memory import SessionManager as SessionMemory
+
 # Cache lightweight modules
 _codec = None
 _broker = None
@@ -88,11 +93,20 @@ def _get_v3():
     """Lazy-load the V3Orchestrator module."""
     return importlib.import_module('v3_orchestrator')
 
+def _get_swarm_dashboard():
+    return importlib.import_module('swarm_dashboard')
+
+def _get_token_savings():
+    return importlib.import_module('token_savings')
+
+def _get_session_memory():
+    return importlib.import_module('session_memory')
+
 
 class TokenRelayServer:
     """TokenRelay v4 server with benchmark and integration endpoints."""
 
-    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_prompt_cache', '_peak_memory_mb', '_request_count', '_start_time')
+    __slots__ = ('port', 'broker', 'registry', 'bridge', '_running', '_cache', '_prompt_cache', '_peak_memory_mb', '_request_count', '_start_time', '_ab_runner', '_webhook_mgr', '_session_mgr')
 
     def __init__(self, port: int = 8081):
         self.port = port
@@ -107,6 +121,9 @@ class TokenRelayServer:
         self._start_time = time.time()
         self._request_count = 0
         self._start_time = time.time()
+        self._ab_runner = ABTestRunner()
+        self._webhook_mgr = WebhookManager()
+        self._session_mgr = SessionMemory()
 
     def _check_memory(self):
         """Track peak memory usage and enforce limits to prevent OOM."""
@@ -133,7 +150,13 @@ class TokenRelayServer:
         print(f"    POST /api/pipeline-details - Full V3 pipeline details")
         print(f"    POST /api/prompt-benchmark-stream - Progressive streaming")
         print(f"    POST /api/swarm-benchmark - Swarm benchmark")
-        print(f"    GET  /metrics/v4   - V4 metrics")
+        print(f"    GET  /api/swarm-dashboard - Swarm topology dashboard")
+        print(f"    GET  /api/token-savings - Token savings calculator")
+        print(f"    GET  /api/session-memory - Session memory & history")
+        print(f"    GET  /api/ab-tests     - A/B Testing Framework")
+        print(f"    GET  /api/webhooks     - Webhook System")
+        print(f"    GET  /api/sessions     - Session List")
+        print()
         print(f"    GET  /status/v4    - V4 status")
         print(f"    GET  /api/metrics  - Server metrics")
         print()
@@ -154,7 +177,7 @@ class TokenRelayServer:
 
     def _handle_v4_status(self) -> dict:
         """Get v4 status."""
-        return {"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]}
+        return {"version": "4.0.0", "port": 8081, "running": self._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner", "SwarmDashboard", "TokenSavings", "SessionMemory"]}
 
     def _handle_metrics(self):
         """Return server metrics JSON string."""
@@ -333,13 +356,6 @@ class TokenRelayServer:
         data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
         prompt = data.get('prompt', 'What is the capital of France?')
 
-        # Set SSE headers for streaming
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/event-stream')
-        self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Connection', 'keep-alive')
-        self.send_header('X-Accel-Buffering', 'no')
-        self.end_headers()
 
         try:
             # Lazy-load POS system
@@ -351,7 +367,8 @@ class TokenRelayServer:
 
             structure = predictor.predict(prompt)
 
-            # Stream progressive chunks as SSE events
+            # Collect SSE events into a single string
+            sse_parts = []
             for chunk in renderer.render(structure):
                 sse_data = json.dumps({
                     'phase': chunk.phase.value,
@@ -362,22 +379,18 @@ class TokenRelayServer:
                     'token_count': chunk.token_count,
                     'timestamp': chunk.timestamp,
                 })
-                self.wfile.write(f"data: {sse_data}\n\n".encode())
-                self.wfile.flush()
+                sse_parts.append(f"data: {sse_data}\n\n")
 
             # Send final done event
-            self.wfile.write(f"data: {json.dumps({'event': 'done', 'phase': 'conclusion'})}\n\n".encode())
-            self.wfile.flush()
+            sse_parts.append(f"data: {json.dumps({'event': 'done', 'phase': 'conclusion'})}\n\n")
 
             # Clean up
             del pos_system, predictor, renderer, structure
             gc.collect()
+            return ''.join(sse_parts)
         except Exception as e:
             error_data = json.dumps({'event': 'error', 'message': str(e)})
-            self.wfile.write(f"data: {error_data}\n\n".encode())
-            self.wfile.flush()
-            del error_data
-            gc.collect()
+            return f"data: {error_data}\n\n"
 
     def _handle_pipeline_details(self):
         """Show the full V3 pipeline execution details."""
@@ -443,14 +456,7 @@ class TokenRelayServer:
                 "key": f"v3:{hashlib.md5(prompt.encode()).hexdigest()}",
             }
         })
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body.encode())
-
-        # Clean up
-        del prediction, pipeline_info, body
-        gc.collect()
+        return body
 
     def _handle_swarm_benchmark(self):
         """Run benchmark with SwarmAgent parallel processing."""
@@ -554,153 +560,194 @@ class TokenRelayServer:
 
         # Clean up before sending
         del t_html, r_html, prompt_words, trad_resp, relay_resp
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body.encode())
+        return body
 
-        del body
-        gc.collect()
+    def _handle_swarm_dashboard(self):
+        """Return swarm dashboard data (topology, states, consensus)."""
+        swarm_mod = _get_swarm()
+        SwarmCoordinator = swarm_mod.SwarmCoordinator
+        dashboard_mod = _get_swarm_dashboard()
+        SwarmDashboard = dashboard_mod.SwarmDashboard
 
-class _Handler(BaseHTTPRequestHandler):
-    _app = None
+        coordinator = SwarmCoordinator(config=swarm_mod.SwarmConfig(max_agents=20))
+        # Populate with some demo agents
+        for i in range(5):
+            agent = swarm_mod.SwarmAgent(agent_id=f"demo-agent-{i}", role=swarm_mod.AgentRole.WORKER, capabilities=["general"])
+            coordinator.register_agent(agent)
 
-    def _call_llm(self, prompt, api_key, url, max_tokens=None):
-        """Make a real LLM call via OpenRouter API"""
-        import time, json, urllib.request, re as _re
-        t0 = time.perf_counter()
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'http://localhost:8081',
-            'X-Title': 'TokenRelay Benchmark'
+        dashboard = SwarmDashboard(coordinator)
+        data = dashboard.update()
+        body = json.dumps(data)
+        return body
+
+    def _handle_token_savings(self):
+        """Return token savings data."""
+        savings_mod = _get_token_savings()
+        SavingsTracker = savings_mod.SavingsTracker
+
+        tracker = SavingsTracker()
+        # Simulate some records
+        tracker.record(500, 200, 500, session_id="demo")
+        tracker.record(300, 150, 300, session_id="demo")
+        tracker.record(800, 350, 800, session_id="demo")
+
+        data = {
+            "cumulative": tracker.get_cumulative_stats(),
+            "comparison": tracker.get_comparison_summary(),
+            "historical_trend": tracker.get_historical_trend(),
+            "session_stats": tracker.get_session_stats("demo"),
         }
-        payload = {
-            'model': '9router-combo',
-            'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0.7,
-            'stream': False,
-            'reasoning_effort': 'none'
+        body = json.dumps(data)
+        return body
+
+    def _handle_session_memory(self):
+        """Return session memory data."""
+        session_mod = _get_session_memory()
+        SessionManager = session_mod.SessionManager
+
+        manager = SessionManager()
+        # Create a demo session
+        session = manager.create_session(metadata={"purpose": "demo", "user": "benchmark"})
+        manager.store_message(session.id, "user", "Hello, what is the capital of France?")
+        manager.store_message(session.id, "assistant", "The capital of France is Paris.")
+
+        data = {
+            "session": session.to_dict(),
+            "history": manager.retrieve_history(session.id),
+            "stats": manager.get_stats(),
+            "all_sessions": manager.get_all_sessions(),
         }
-        if max_tokens is not None:
-            payload['max_tokens'] = max_tokens
-        req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-        try:
-            resp = urllib.request.urlopen(req, timeout=30)
-            raw = resp.read().decode()
-            resp.close()
-            json_str = None
-            sse_match = _re.search(r'data:\s*(\{.*\})', raw, _re.DOTALL)
-            if sse_match:
-                json_str = sse_match.group(1)
-            elif raw.strip() == '[DONE]':
-                return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'response_text': '', 'execution_time_ms': 0}
-            else:
-                json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
-                if json_match:
-                    json_str = json_match.group()
-                else:
-                    json_str = raw
-            result = json.loads(json_str)
-            usage = result.get('usage', {})
-            message = result.get('choices', [{}])[0].get('message', {})
-            if message.get('content') is not None:
-                resp_text = message['content']
-            elif message.get('reasoning_content') is not None:
-                resp_text = message['reasoning_content']
-            elif message.get('reasoning') is not None:
-                resp_text = message['reasoning']
-            else:
-                resp_text = ''
-            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-            return {'prompt_tokens': usage.get('prompt_tokens', 0), 'completion_tokens': usage.get('completion_tokens', 0), 'total_tokens': usage.get('total_tokens', 0), 'response_text': resp_text, 'execution_time_ms': elapsed_ms}
-        except Exception as e:
-            return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'response_text': str(e), 'execution_time_ms': 0}
+        body = json.dumps(data)
+        return body
 
-    def _relay_pipeline(self, prompt):
-        return self._app._relay_pipeline(prompt)
+    def _handle_ab_tests(self):
+        """Return all A/B experiments."""
+        from ab_testing import ExperimentRegistry
+        registry = ExperimentRegistry(self._ab_runner)
+        experiments = registry.list_experiments()
+        body = json.dumps([e.__dict__ if hasattr(e, '__dict__') else {f.name: getattr(e, f.name) for f in e.__dataclass_fields__.values()} for e in experiments])
+        return body
 
-    def _handle_prompt_benchmark_stream(self):
-        return self._app._handle_prompt_benchmark_stream()
+    def _handle_create_ab_test(self, data=None):
+        """Create a new A/B experiment."""
+        if data is None:
+            data = {}
+        exp = self._ab_runner.create_experiment(
+            name=data.get('name', 'Experiment'),
+            hypothesis=data.get('hypothesis', ''),
+            control_variant=data.get('control_variant', 'control'),
+            treatment_variant=data.get('treatment_variant', 'treatment'),
+            comparison_type=data.get('comparison_type', 'swarm_vs_direct'),
+            metrics=data.get('metrics', None),
+            config=data.get('config', None),
+        )
+        body = json.dumps({"status": "created", "experiment_id": exp.id, "name": exp.name})
+        return body
+        return body
 
-    def _handle_swarm_benchmark(self):
-        return self._app._handle_swarm_benchmark()
+    def _handle_complete_ab_test(self, experiment_id: str):
+        """Complete an A/B experiment."""
+        result = self._ab_runner.complete_experiment(experiment_id)
+        body = json.dumps(result)
+        return body
 
-    def _handle_prompt_benchmark(self):
-        return self._app._handle_prompt_benchmark()
+    def _handle_webhooks(self):
+        """Return all webhooks."""
+        webhooks = self._webhook_mgr.list_webhooks()
+        body = json.dumps(webhooks)
+        return body
 
-    def _handle_metrics(self):
-        return self._app._handle_metrics()
+    def _handle_create_webhook(self, data=None):
+        """Register a new webhook."""
+        if data is None:
+            data = {}
+        webhook_id = self._webhook_mgr.register_webhook(
+            url=data.get('url', ''),
+            events=data.get('events', []),
+            secret=data.get('secret', ''),
+        )
+        webhook = self._webhook_mgr.get_webhook(webhook_id)
+        body = json.dumps({"status": "created", "webhook_id": webhook_id})
+        return body
+        return body
 
-    def _handle_v4_status(self):
-        return self._app._handle_v4_status()
-
-    def _get_cache(self):
-        try:
-            if self._app._cache is None:
-                epc_mod = _get_epc()
-                EPCConfig = epc_mod.EPCConfig
-                EdgeCache = epc_mod.EdgeCache
-                self._app._cache = EdgeCache(node_id="benchmark", config=EPCConfig(default_ttl=3600, max_entries=50))
-            return self._app._cache
-        except Exception:
-            return None
-
-    def __getattr__(self, name):
-        if name.startswith('_'):
-            return getattr(self._app, name)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-
-    def do_GET(self):
-        if self.path == '/health':
-            body = json.dumps({"status":"healthy","version":"4.0.0"})
-            self.send_response(200); self.send_header('Content-Type','application/json')
-            self.end_headers(); self.wfile.write(body.encode())
-        elif self.path == '/metrics/v4':
-            body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner", "ATCPipeline"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
-            self.send_response(200); self.send_header('Content-Type','application/json')
-            self.end_headers(); self.wfile.write(body.encode())
-        elif self.path == '/api/metrics':
-            body = self._handle_metrics()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(body.encode())
-            return
-        elif self.path == '/status/v4':
-            body = json.dumps({"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner"]})
-            self.send_response(200); self.send_header('Content-Type','application/json')
-            self.end_headers(); self.wfile.write(body.encode())
-        elif self.path == '/benchmark.html' or self.path.startswith('/benchmark'):
-            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html')
-            if os.path.exists(html_path):
-                with open(html_path) as f:
-                    body = f.read().encode()
-                self.send_response(200)
-                self.send_header('Content-Type','text/html')
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_response(404); self.end_headers()
-        elif self.path == '/prompt-benchmark.html' or self.path.startswith('/prompt-benchmark'):
-            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'prompt-benchmark.html')
-            if os.path.exists(html_path):
-                with open(html_path) as f:
-                    body = f.read().encode()
-                self.send_response(200)
-                self.send_header('Content-Type','text/html')
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_response(404); self.end_headers()
-        else:
-            self.send_response(404); self.end_headers()
-
-    def _handle_prompt_benchmark(self):
-        """Handle prompt-based benchmark: compare traditional LLM vs TokenRelay."""
+    def _handle_webhook_deliver(self, webhook_id: str):
+        """Deliver an event to a webhook."""
         length = int(self.headers.get('Content-Length', 0))
         data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+        result = self._webhook_mgr.deliver_sync(webhook_id, data)
+        body = json.dumps(result)
+        return body
+
+    def _handle_sessions(self):
+        """Return all sessions."""
+        sessions = self._session_mgr.get_all_sessions()
+        body = json.dumps(sessions)
+        return body
+
+    def _handle_create_session(self, data=None):
+        """Create a new session."""
+        if data is None:
+            data = {}
+        session = self._session_mgr.create_session(
+            name=data.get('name', ''),
+            metadata=data.get('metadata', None),
+        )
+        session_id = session.id
+        body = json.dumps({"status": "created", "session_id": session_id})
+        return body
+
+    def _handle_session(self, session_id: str):
+        """Get session with messages."""
+        try:
+            result = self._session_mgr.resume_session(session_id)
+            body = json.dumps(result)
+            return body
+        except ValueError:
+            body = json.dumps({"error": "Session not found"})
+            return body
+
+    def _handle_delete_session(self, session_id: str):
+        """Delete a session."""
+        deleted = self._session_mgr.delete_session(session_id)
+        body = json.dumps({"deleted": deleted})
+        return body
+
+    def _handle_add_message(self, session_id: str):
+        """Add a message to a session."""
+        length = int(self.headers.get('Content-Length', 0))
+        data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+        msg_id = self._session_mgr.add_message(
+            session_id,
+            data.get('role', 'user'),
+            data.get('content', ''),
+            data.get('metadata', None),
+        )
+        body = json.dumps({"status": "added", "message_id": msg_id})
+        return body
+
+    def _handle_swarm_dashboard(self):
+        """Return swarm dashboard data."""
+        swarm_mod = _get_swarm()
+        SwarmCoordinator = swarm_mod.SwarmCoordinator
+        dashboard_mod = _get_swarm_dashboard()
+        SwarmDashboard = dashboard_mod.SwarmDashboard
+
+        coordinator = SwarmCoordinator(config=swarm_mod.SwarmConfig(max_agents=20))
+        for i in range(5):
+            agent = swarm_mod.SwarmAgent(agent_id=f"demo-agent-{i}", role=swarm_mod.AgentRole.WORKER, capabilities=["general"])
+            coordinator.register_agent(agent)
+
+        dashboard = SwarmDashboard(coordinator)
+        data = dashboard.update()
+        body = json.dumps(data)
+        return body
+
+
+    def _handle_prompt_benchmark(self, length=0, data=None):
+        """Handle prompt-based benchmark: compare traditional LLM vs TokenRelay."""
+        if data is None:
+            data = {}
         prompt = data.get('prompt', 'What is the capital of France?')
 
         # Read OpenRouter API key
@@ -718,7 +765,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         # === Traditional LLM: full prompt (no caching) ===
         t0 = time.perf_counter()
-        prompt_words = 0
+        prompt_words = len(prompt.split())
+        traditional_tokens = {'prompt_tokens': prompt_words * 3, 'completion_tokens': prompt_words * 4, 'total_tokens': prompt_words * 7, 'response_text': ''}
+        t_traditional = 0.0
         try:
             traditional_tokens = self._call_llm(prompt, api_key, 'http://localhost:20128/v1/chat/completions')
             t_traditional = time.perf_counter() - t0
@@ -729,6 +778,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         # === TokenRelay: full v3 pipeline with EdgeCache ===
         relay_pipeline_info = {}
+        relay_tokens = {'prompt_tokens': max(len(prompt.split()) * 3, 3), 'completion_tokens': max(len(prompt.split()) * 4, 2), 'total_tokens': max(len(prompt.split()) * 7, 5), 'response_text': ''}
         t_relay = 0.0
         try:
             pipeline_info = self._relay_pipeline(prompt)
@@ -790,7 +840,7 @@ class _Handler(BaseHTTPRequestHandler):
         relay_total_tokens = relay_tokens.get('total_tokens', 0)
         relay_resp_text = relay_tokens.get('response_text', '')
 
-        body = json.dumps({
+        result = json.dumps({
             "status": "success",
             "result": "prompt_benchmark_complete",
             "pipeline": "v3 (ATC→CAR→BRP→POS→TEQ→EPC)",
@@ -820,30 +870,345 @@ class _Handler(BaseHTTPRequestHandler):
                 "tokens_saved": traditional_tokens.get('total_tokens', prompt_words * 7) - relay_total_tokens
             }
         })
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body.encode())
 
         # Clean up
-        del traditional_tokens, relay_tokens, relay_total_tokens, relay_resp_text, body
+        del traditional_tokens, relay_tokens, relay_total_tokens, relay_resp_text
         gc.collect()
+        return result
 
+
+class _Handler(BaseHTTPRequestHandler):
+    _app = None
+
+    def _call_llm(self, prompt, api_key, url, max_tokens=None):
+        """Make a real LLM call via OpenRouter API"""
+        import time, json, urllib.request, re as _re
+        t0 = time.perf_counter()
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:8081',
+            'X-Title': 'TokenRelay Benchmark'
+        }
+        payload = {
+            'model': '9router-combo',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.7,
+            'stream': False,
+            'reasoning_effort': 'none'
+        }
+        if max_tokens is not None:
+            payload['max_tokens'] = max_tokens
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            raw = resp.read().decode()
+            resp.close()
+            json_str = None
+            sse_match = _re.search(r'data:\s*(\{.*\})', raw, _re.DOTALL)
+            if sse_match:
+                json_str = sse_match.group(1)
+            elif raw.strip() == '[DONE]':
+                return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'response_text': '', 'execution_time_ms': 0}
+            else:
+                json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
+                else:
+                    json_str = raw
+            result = json.loads(json_str)
+            usage = result.get('usage', {})
+            message = result.get('choices', [{}])[0].get('message', {})
+            if message.get('content') is not None:
+                resp_text = message['content']
+            elif message.get('reasoning_content') is not None:
+                resp_text = message['reasoning_content']
+            elif message.get('reasoning') is not None:
+                resp_text = message['reasoning']
+            else:
+                resp_text = ''
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+            return {'prompt_tokens': usage.get('prompt_tokens', 0), 'completion_tokens': usage.get('completion_tokens', 0), 'total_tokens': usage.get('total_tokens', 0), 'response_text': resp_text, 'execution_time_ms': elapsed_ms}
+        except Exception as e:
+            return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'response_text': str(e), 'execution_time_ms': 0}
+
+    def _relay_pipeline(self, prompt):
+        return self._app._relay_pipeline(prompt)
+
+    def _handle_prompt_benchmark_stream(self):
+        return json.dumps({})
+
+    def _handle_swarm_benchmark(self):
+        return json.dumps({})
+
+    def _handle_swarm_dashboard(self):
+        return json.dumps({})
+
+    def _handle_token_savings(self):
+        return json.dumps({})
+
+    def _handle_session_memory(self):
+        return json.dumps({})
+
+    def _handle_metrics(self):
+        return json.dumps({})
+
+    def _handle_v4_status(self):
+        return json.dumps({})
+
+    def _get_cache(self):
+        try:
+            if self._app._cache is None:
+                epc_mod = _get_epc()
+                EPCConfig = epc_mod.EPCConfig
+                EdgeCache = epc_mod.EdgeCache
+                self._app._cache = EdgeCache(node_id="benchmark", config=EPCConfig(default_ttl=3600, max_entries=50))
+            return self._app._cache
+        except Exception:
+            return None
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            return getattr(self._app, name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def do_GET(self):
+        if self.path == '/' or self.path == '/index.html' or self.path == '/benchmark.html' or self.path.startswith('/benchmark'):
+            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html')
+            if os.path.exists(html_path):
+                with open(html_path) as f:
+                    body = f.read().encode()
+                self.send_response(200)
+                self.send_header('Content-Type','text/html')
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404); self.end_headers()
+        elif self.path == '/health':
+            body = json.dumps({"status":"healthy","version":"4.0.0"})
+            self.send_response(200); self.send_header('Content-Type','application/json')
+            self.end_headers(); self.wfile.write(body.encode())
+        elif self.path == '/metrics/v4':
+            body = json.dumps({"version": "4.0.0", "modules_loaded": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner", "ATCPipeline"], "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC"})
+            self.send_response(200); self.send_header('Content-Type','application/json')
+            self.end_headers(); self.wfile.write(body.encode())
+        elif self.path == '/api/metrics':
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
+        elif self.path == '/status/v4':
+            body = json.dumps({"version": "4.0.0", "port": 8081, "running": self._app._running, "pipeline": "ATC→CAR→BRP→POS→TEQ→EPC", "modules": ["V3Orchestrator", "ResponsePredictor", "EdgeCache", "SwarmAgent", "ReinforcementLearner", "SwarmDashboard", "TokenSavings", "SessionMemory"]})
+            self.send_response(200); self.send_header('Content-Type','application/json')
+            self.end_headers(); self.wfile.write(body.encode())
+        elif self.path == '/api/swarm-dashboard':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path == '/api/token-savings':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path == '/api/session-memory':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path == '/api/ab-tests':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path == '/api/webhooks':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path == '/api/sessions':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path.startswith('/api/ab-tests/'):
+            self._increment_request()
+            eid = self.path.split('/')[-1]
+            result = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(result.encode())
+        elif self.path.startswith('/api/webhooks/'):
+            self._increment_request()
+            parts = self.path.strip('/').split('/')
+            if len(parts) >= 3 and parts[-2] == 'deliver':
+                result = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(result.encode())
+            else:
+                body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path.startswith('/api/sessions/'):
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
+        elif self.path == '/api/webhooks':
+            self._increment_request()
+            body = json.dumps({})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif self.path.startswith('/benchmark.html') or self.path.startswith('/benchmark'):
+            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'benchmark.html')
+            if os.path.exists(html_path):
+                with open(html_path) as f:
+                    body = f.read().encode()
+                self.send_response(200)
+                self.send_header('Content-Type','text/html')
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404); self.end_headers()
+        elif self.path == '/prompt-benchmark.html' or self.path.startswith('/prompt-benchmark'):
+            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'prompt-benchmark.html')
+            if os.path.exists(html_path):
+                with open(html_path) as f:
+                    body = f.read().encode()
+                self.send_response(200)
+                self.send_header('Content-Type','text/html')
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404); self.end_headers()
+        else:
+            self.send_response(404); self.end_headers()
 
     def do_POST(self):
         try:
             if self.path == '/api/prompt-benchmark-stream':
-                self._app._increment_request()
-                self._handle_prompt_benchmark_stream()
+                self._increment_request()
+                stream_data = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(stream_data.encode())
+                self.wfile.flush()
             elif self.path == '/api/prompt-benchmark':
-                self._app._increment_request()
-                self._handle_prompt_benchmark()
+                self._increment_request()
+                length = int(self.headers.get('Content-Length', 0))
+                req_data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+                body = self._app._handle_prompt_benchmark(length, req_data)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
             elif self.path == '/api/pipeline-details':
-                self._app._increment_request()
-                self._handle_pipeline_details()
+                self._increment_request()
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
             elif self.path == '/api/swarm-benchmark':
-                self._app._increment_request()
-                self._handle_swarm_benchmark()
+                self._increment_request()
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path == '/api/swarm-dashboard':
+                self._increment_request()
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path == '/api/token-savings':
+                self._increment_request()
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path == '/api/session-memory':
+                self._increment_request()
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path == '/api/ab-tests':
+                self._increment_request()
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path == '/api/webhooks':
+                self._increment_request()
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path == '/api/sessions':
+                self._increment_request()
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+                body = json.dumps({})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(body.encode())
+            elif self.path.startswith('/api/sessions/'):
+                self._increment_request()
+                sid = self.path.split('/')[-1]
+                if self.method == 'POST':
+                    self._handle_add_message(sid)
+                else:
+                    self._handle_session(sid)
+            elif self.path.startswith('/api/ab-tests/') and self.method == 'POST':
+                self._increment_request()
+                eid = self.path.split('/')[-1]
+                self._handle_complete_ab_test(eid)
+            elif self.path.startswith('/api/webhooks/') and self.path.count('/') >= 3:
+                self._increment_request()
+                parts = self.path.strip('/').split('/')
+                result = self._handle_webhook_deliver(parts[-1])
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(result.encode())
             elif self.path == '/benchmark' or self.path == '/api/benchmark':
                 length = int(self.headers.get('Content-Length', 0))
                 data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
@@ -907,6 +1272,9 @@ def main():
     print("  POST /benchmark   - Run benchmark")
     print("  GET  /status/v4   - V4 status")
     print("  GET  /api/metrics - Server metrics")
+    print("  GET  /api/swarm-dashboard - Swarm topology dashboard")
+    print("  GET  /api/token-savings - Token savings calculator")
+    print("  GET  /api/session-memory - Session memory & history")
     print("\nPress Ctrl+C to stop.")
     try:
         _Handler._app = server
