@@ -662,7 +662,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Type','application/json')
             self.end_headers(); self.wfile.write(body.encode())
         elif self.path == '/api/metrics':
-            body = self._app._handle_metrics()
+            body = self._handle_metrics()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
