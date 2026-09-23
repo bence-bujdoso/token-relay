@@ -61,6 +61,8 @@ class AdapterConfig:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+_adapter_counter = [0]
+
 @dataclass
 class ExternalAdapter:
     adapter_id: str
@@ -111,7 +113,8 @@ class ExternalAdapter:
     def __init__(self, adapter_id: str = "", config: Optional[AdapterConfig] = None,
                  protocol_type: ProtocolType = ProtocolType.HTTP_REST,
                  endpoint: str = "", state: AdapterState = AdapterState.REGISTERED):
-        self.adapter_id = adapter_id or f"adapter_{int(time.time() * 1000)}"
+        _adapter_counter[0] += 1
+        self.adapter_id = adapter_id or f"adapter_{int(time.time() * 1000)}_{_adapter_counter[0]}"
         self.config = config or AdapterConfig()
         self.protocol_type = protocol_type
         self.endpoint = endpoint
@@ -207,7 +210,7 @@ class AdapterRegistry:
         if adapter:
             adapter.state = AdapterState.CONNECTED
             return True
-        return False
+        raise AdapterNotFoundError(adapter_id)
 
     def disconnect_adapter(self, adapter_id: str) -> bool:
         """Disconnect an adapter."""
@@ -215,7 +218,7 @@ class AdapterRegistry:
         if adapter:
             adapter.state = AdapterState.DISCONNECTED
             return True
-        return False
+        raise AdapterNotFoundError(adapter_id)
 
     def unregister_adapter(self, adapter_id: str) -> bool:
         """Unregister an adapter."""
