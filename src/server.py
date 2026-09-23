@@ -566,6 +566,27 @@ class TokenRelayServer:
 class _Handler(BaseHTTPRequestHandler):
     _app = None
 
+    def _call_llm(self, prompt, api_key, url, max_tokens=None):
+        return self._app._call_llm(prompt, api_key, url, max_tokens)
+
+    def _relay_pipeline(self, prompt):
+        return self._app._relay_pipeline(prompt)
+
+    def _handle_prompt_benchmark_stream(self):
+        return self._app._handle_prompt_benchmark_stream()
+
+    def _handle_swarm_benchmark(self):
+        return self._app._handle_swarm_benchmark()
+
+    def _handle_prompt_benchmark(self):
+        return self._app._handle_prompt_benchmark()
+
+    def _handle_metrics(self):
+        return self._app._handle_metrics()
+
+    def _handle_v4_status(self):
+        return self._app._handle_v4_status()
+
     def _get_cache(self):
         try:
             if self._app._cache is None:

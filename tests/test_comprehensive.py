@@ -409,7 +409,7 @@ class TestServerEndpoints(unittest.TestCase):
 
     @classmethod
     def _run_server(cls):
-        httpd = __import__('http.server').HTTPServer(('127.0.0.1', 8082), cls.handler)
+        httpd = __import__('http.server', fromlist=['HTTPServer']).HTTPServer(('127.0.0.1', 8082), cls.handler)
         cls.httpd = httpd
         httpd.serve_forever()
 
