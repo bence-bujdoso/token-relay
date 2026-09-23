@@ -413,8 +413,9 @@ class SelfOrganization:
         self.cluster_agents(self.strategy)
         self.reassign_tasks()
         self.detect_anomalies()
-        result = {i: cluster for i, cluster in enumerate(self.clusters)}
-        return result
+        if not self.clusters:
+            return {}
+        return {i: cluster for i, cluster in enumerate(self.clusters)}
     def adapt_organization(self):
         self.adaptations = []
         clusters = self.cluster_agents()
