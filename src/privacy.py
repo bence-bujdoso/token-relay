@@ -84,7 +84,8 @@ class PrivacyPreservingToken:
         self._visibility = v
     def create_token(self, payload, visibility=TokenVisibility.PUBLIC, user_id="anonymous", zk_proof=None):
         token_id = "ppt_" + uuid.uuid4().hex[:16]
-        self._tokens[token_id] = {"payload": payload, "visibility": visibility.name, "user_id": user_id}
+        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest() if isinstance(payload, dict) else hashlib.sha256(str(payload).encode()).hexdigest()
+        self._tokens[token_id] = {"payload": payload, "visibility": visibility.name, "user_id": user_id, "payload_hash": payload_hash}
         return token_id
     def get_token_metadata(self, token_id):
         token = self._tokens.get(token_id, {})
@@ -230,7 +231,9 @@ class ZKProofVerifier:
             return ProofStatus.EXPIRED
         if proof.revoked:
             return ProofStatus.REVOKED
-        return ProofStatus.VALID
+        if proof.verified:
+            return ProofStatus.VALID
+        return ProofStatus.UNKNOWN
 
     def revoke_proof(self, proof_id: str) -> bool:
         if proof_id in self._proofs:
