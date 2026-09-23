@@ -255,7 +255,7 @@ class TestSelfOrganization(unittest.TestCase):
     def test_organize(self):
         org = SelfOrganization(self.coord, SwarmConfig())
         groups = org.organize()
-        self.assertIsInstance(groups, list)
+        self.assertIsInstance(groups, dict)
     def test_create_self_organization(self):
         o = create_self_organization(self.coord, SwarmConfig())
         self.assertIsInstance(o, SelfOrganization)

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TokenRelay v4 — Prompt Benchmark</title>
+    <title>TokenRelay v4 — Benchmark & Integration Dashboard</title>
     <style>
         :root {
             --bg: #0D1117; --card: #161B22; --card-hover: #1C2333; --border: #30363D;
@@ -49,7 +49,8 @@
         .subagent-flow-diagram { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; font-family: 'Courier New', monospace; font-size: 0.85rem; color: var(--text-dim); line-height: 2; }
         .subagent-flow-diagram .arrow { color: var(--green); font-weight: bold; }
         .subagent-flow-diagram .coord { color: var(--purple); font-weight: bold; }
-        .subagent-flow-diagram .llm-c { color: var(--orange); font-weight: bold; }button { background: linear-gradient(135deg, var(--accent), #388bfd); color: #fff; border: none; padding: 0.7rem 1.8rem; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: inherit; }
+        .subagent-flow-diagram .llm-c { color: var(--orange); font-weight: bold; }
+        button { background: linear-gradient(135deg, var(--accent), #388bfd); color: #fff; border: none; padding: 0.7rem 1.8rem; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: inherit; }
         button:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(88,166,255,0.3); }
         button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
         button.btn-secondary { background: var(--card); border: 1px solid var(--border); color: var(--text-dim); }
@@ -93,14 +94,136 @@
         .event-msg { color: var(--text-dim); }
         footer { text-align: center; padding: 2rem 0; color: var(--text-dim); font-size: 0.8rem; border-top: 1px solid var(--border); margin-top: 2rem; }
         @media (max-width: 768px) { .container { padding: 1rem; } header h1 { font-size: 1.8rem; } .prompt-results { grid-template-columns: 1fr; } }
+
+        /* ===== NEW SWARM DASHBOARD STYLES ===== */
+        .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+        .dashboard-panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; }
+        .dashboard-panel h3 { font-size: 1.1rem; color: var(--accent); margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+        .dashboard-panel .panel-meta { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 1rem; }
+        .topology-canvas { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; min-height: 200px; position: relative; overflow: hidden; }
+        .agent-node { position: absolute; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; border: 2px solid; transition: all 0.3s; }
+        .agent-node.idle { background: #1a1a2e; border-color: var(--accent); color: var(--accent); }
+        .agent-node.busy { background: #1a2e1a; border-color: var(--green); color: var(--green); }
+        .agent-node.offline { background: #2e1a1a; border-color: var(--error); color: var(--error); }
+        .agent-node.error { background: #2e2e1a; border-color: var(--orange); color: var(--orange); }
+        .agent-node .node-id { font-size: 0.6rem; }
+        .state-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+        .state-box { text-align: center; padding: 0.8rem; border-radius: 8px; background: var(--bg); }
+        .state-box .state-count { font-size: 1.5rem; font-weight: 800; }
+        .state-box .state-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; }
+        .state-box.idle .state-count { color: var(--accent); }
+        .state-box.busy .state-count { color: var(--green); }
+        .state-box.offline .state-count { color: var(--error); }
+        .state-box.error .state-count { color: var(--orange); }
+        .consensus-log { max-height: 150px; overflow-y: auto; font-family: 'SF Mono', monospace; font-size: 0.75rem; }
+        .consensus-entry { padding: 0.3rem 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; }
+        .consensus-entry .vote-yes { color: var(--green); }
+        .consensus-entry .vote-no { color: var(--error); }
+        .refresh-btn { background: var(--card); border: 1px solid var(--border); color: var(--text-dim); padding: 0.4rem 1rem; border-radius: 6px; font-size: 0.8rem; cursor: pointer; }
+        .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* ===== TOKEN SAVINGS WIDGET ===== */
+        .savings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .savings-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; text-align: center; }
+        .savings-card .savings-value { font-size: 2rem; font-weight: 800; color: var(--green); }
+        .savings-card .savings-label { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.3rem; }
+        .savings-card .savings-detail { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.5rem; }
+        .trend-chart { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-height: 100px; }
+        .trend-bar { display: inline-block; width: 8px; margin: 0 2px; border-radius: 2px 2px 0 0; background: var(--green); vertical-align: bottom; }
+        .trend-bar:hover { background: var(--accent); }
+
+        /* ===== SESSION MEMORY ===== */
+        .session-list { max-height: 200px; overflow-y: auto; }
+        .session-item { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
+        .session-item .session-id { font-family: 'SF Mono', monospace; font-size: 0.7rem; color: var(--accent); }
+        .session-item .session-info { font-size: 0.8rem; color: var(--text-dim); }
+        .session-messages { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; max-height: 150px; overflow-y: auto; font-family: 'SF Mono', monospace; font-size: 0.8rem; }
+        .session-msg { margin-bottom: 0.5rem; }
+        .session-msg .role { font-weight: 700; color: var(--accent); }
+        .session-msg .content { color: var(--text); }
+        .session-msg .timestamp { color: var(--text-dim); font-size: 0.7rem; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>⚡ TokenRelay v4</h1>
-            <p class="subtitle">Prompt Benchmark — Subagent-Optimized LLM Communication</p>
+            <p class="subtitle">Swarm Intelligence Dashboard — Real-time Agent Visualization, Token Savings & Session Memory</p>
+            <span class="badge">v4.0.0</span>
         </header>
+
+        <!-- Swarm Dashboard Panel -->
+        <div class="arch-section">
+            <h2>🐝 Swarm Intelligence Dashboard</h2>
+            <div class="dashboard-grid">
+                <!-- Topology Visualization -->
+                <div class="dashboard-panel">
+                    <h3>📊 Swarm Topology</h3>
+                    <div class="panel-meta">Real-time agent connections & states</div>
+                    <button class="refresh-btn" onclick="loadSwarmDashboard()">↻ Refresh Topology</button>
+                    <div class="topology-canvas" id="topologyCanvas">
+                        <div style="padding:2rem;text-align:center;color:var(--text-dim);">Click Refresh to load topology</div>
+                    </div>
+                </div>
+                <!-- Agent State Tracker -->
+                <div class="dashboard-panel">
+                    <h3>📋 Agent States</h3>
+                    <div class="panel-meta">IDLE / BUSY / OFFLINE / ERROR</div>
+                    <div class="state-grid" id="stateGrid">
+                        <div class="state-box idle"><div class="state-count" id="stateIdle">—</div><div class="state-label">IDLE</div></div>
+                        <div class="state-box busy"><div class="state-count" id="stateBusy">—</div><div class="state-label">BUSY</div></div>
+                        <div class="state-box offline"><div class="state-count" id="stateOffline">—</div><div class="state-label">OFFLINE</div></div>
+                        <div class="state-box error"><div class="state-count" id="stateError">—</div><div class="state-label">ERROR</div></div>
+                    </div>
+                </div>
+                <!-- Consensus Visualizer -->
+                <div class="dashboard-panel">
+                    <h3>🗳️ Consensus Log</h3>
+                    <div class="panel-meta">Voting-based decisions & leader election</div>
+                    <div class="consensus-log" id="consensusLog">
+                        <div style="color:var(--text-dim);padding:0.5rem;">No consensus events yet</div>
+                    </div>
+                </div>
+                <!-- Dashboard Summary -->
+                <div class="dashboard-panel">
+                    <h3>📈 Dashboard Summary</h3>
+                    <div class="panel-meta">Aggregated swarm metrics</div>
+                    <div id="dashboardSummary">
+                        <div style="color:var(--text-dim);padding:0.5rem;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Token Savings Widget -->
+        <div class="arch-section">
+            <h2>💰 Token Savings Calculator</h2>
+            <div class="savings-grid" id="savingsGrid">
+                <div class="savings-card"><div class="savings-value" id="savingsPct">—</div><div class="savings-label">Avg Savings</div></div>
+                <div class="savings-card"><div class="savings-value" id="totalSaved">—</div><div class="savings-label">Tokens Saved</div></div>
+                <div class="savings-card"><div class="savings-value" id="totalCalls">—</div><div class="savings-label">Total Calls</div></div>
+                <div class="savings-card"><div class="savings-value" id="bestSavings">—</div><div class="savings-label">Best Savings</div></div>
+            </div>
+            <div class="trend-chart" id="trendChart">
+                <h4 style="color:var(--accent);margin-bottom:0.5rem;">Historical Trend</h4>
+                <div id="trendBars">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Session Memory -->
+        <div class="arch-section">
+            <h2>💾 Session Memory & History</h2>
+            <div class="dashboard-grid">
+                <div class="dashboard-panel">
+                    <h3>📁 Active Sessions</h3>
+                    <div class="session-list" id="sessionList">Loading...</div>
+                </div>
+                <div class="dashboard-panel">
+                    <h3>📖 Session History</h3>
+                    <div class="session-messages" id="sessionMessages">Select a session to view messages</div>
+                </div>
+            </div>
+        </div>
 
         <!-- Architecture -->
         <div class="arch-section">
@@ -250,9 +373,9 @@
         </div>
 
         <div class="event-log" id="eventLog">
-            <div class="event"><span class="event-time">[--:--:--]</span> <span class="event-type info">INFO</span> <span class="event-msg">TokenRelay v4.0.0 Prompt Benchmark Dashboard ready.</span></div>
+            <div class="event"><span class="event-time">[--:--:--]</span> <span class="event-type info">INFO</span> <span class="event-msg">TokenRelay v4.0.0 Swarm Dashboard ready.</span></div>
         </div>
-        <footer>TokenRelay v4.0.0 — Prompt Benchmark Dashboard — Developer: Bence Bujdoso</footer>
+        <footer>TokenRelay v4.0.0 — Swarm Intelligence Dashboard — Developer: Bence Bujdoso</footer>
     </div>
 
     <script>
@@ -280,11 +403,31 @@
             subagentCount: document.getElementById('subagentCount'),
             subagentNames: document.getElementById('subagentNames'),
             subagentFlow: document.getElementById('subagentFlow'),
-            eventLog: document.getElementById('eventLog')
+            eventLog: document.getElementById('eventLog'),
+            // New elements
+            topologyCanvas: document.getElementById('topologyCanvas'),
+            stateIdle: document.getElementById('stateIdle'),
+            stateBusy: document.getElementById('stateBusy'),
+            stateOffline: document.getElementById('stateOffline'),
+            stateError: document.getElementById('stateError'),
+            consensusLog: document.getElementById('consensusLog'),
+            dashboardSummary: document.getElementById('dashboardSummary'),
+            savingsPct: document.getElementById('savingsPct'),
+            totalSaved: document.getElementById('totalSaved'),
+            totalCalls: document.getElementById('totalCalls'),
+            bestSavings: document.getElementById('bestSavings'),
+            trendBars: document.getElementById('trendBars'),
+            sessionList: document.getElementById('sessionList'),
+            sessionMessages: document.getElementById('sessionMessages')
         };
 
         els.btnPromptRun.addEventListener('click', runPromptBenchmark);
         els.btnPromptReset.addEventListener('click', resetPromptBenchmark);
+
+        // Load dashboard data on page load
+        loadSwarmDashboard();
+        loadTokenSavings();
+        loadSessionMemory();
 
         function now() { return new Date().toTimeString().slice(0, 8); }
         function logEvent(type, msg) {
@@ -295,6 +438,167 @@
         function showToast(msg, type = 'info') {
             els.eventLog.innerHTML += `<div class="event"><span class="event-time">[${now()}]</span> <span class="event-type ${type}">${type.toUpperCase()}</span> <span class="event-msg">${msg}</span></div>`;
             els.eventLog.scrollTop = els.eventLog.scrollHeight;
+        }
+
+        // ===== SWARM DASHBOARD =====
+        async function loadSwarmDashboard() {
+            try {
+                const response = await fetch('/api/swarm-dashboard');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                renderSwarmTopology(data);
+                renderAgentStates(data);
+                renderConsensus(data);
+                renderDashboardSummary(data);
+                showToast('Swarm dashboard updated!', 'success');
+            } catch(e) {
+                logEvent('error', 'Failed to load swarm dashboard: ' + e.message);
+            }
+        }
+
+        function renderSwarmTopology(data) {
+            const topo = data.topology || {};
+            const agents = topo.agents || [];
+            const canvas = els.topologyCanvas;
+            let html = '<div style="padding:0.5rem;font-size:0.75rem;color:var(--text-dim);">Agents: ' + topo.total_agents + ' | Active: ' + topo.active_agents + ' | Leader: ' + (topo.leader || 'N/A') + '</div>';
+            html += '<div style="position:relative;width:100%;height:180px;">';
+            const radius = 70;
+            const cx = canvas.offsetWidth / 2;
+            const cy = 90;
+            agents.forEach((agent, i) => {
+                if (agents.length > 1 && i > 0) {
+                    const angle = (2 * Math.PI * (i - 1)) / (agents.length - 1) - Math.PI / 2;
+                    const x = cx + radius * Math.cos(angle) - 20;
+                    const y = cy + radius * Math.sin(angle) - 20;
+                    html += `<div class="agent-node ${agent.state}" style="left:${x}px;top:${y}px;" title="${agent.agent_id}"><span class="node-id">${i}</span></div>`;
+                }
+            });
+            // Center node
+            html += `<div class="agent-node busy" style="left:${cx-20}px;top:${cy-20}px;border-color:var(--purple);" title="Coordinator"><span class="node-id">C</span></div>`;
+            html += '</div>';
+            canvas.innerHTML = html;
+        }
+
+        function renderAgentStates(data) {
+            const states = data.agent_states || {};
+            const counts = { idle: 0, busy: 0, offline: 0, error: 0 };
+            for (const [id, state] of Object.entries(states)) {
+                const s = state.toLowerCase();
+                if (counts.hasOwnProperty(s)) counts[s]++;
+            }
+            els.stateIdle.textContent = counts.idle;
+            els.stateBusy.textContent = counts.busy;
+            els.stateOffline.textContent = counts.offline;
+            els.stateError.textContent = counts.error;
+        }
+
+        function renderConsensus(data) {
+            const consensus = data.consensus_events || [];
+            if (consensus.length === 0) {
+                els.consensusLog.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">No consensus events yet</div>';
+                return;
+            }
+            let html = '';
+            consensus.forEach(event => {
+                html += `<div class="consensus-entry"><span>${event.proposal_id || 'Vote'}</span><span>${event.consensus_reached ? '<span class="vote-yes">✓</span>' : '<span class="vote-no">✗</span>'}</span></div>`;
+            });
+            els.consensusLog.innerHTML = html;
+        }
+
+        function renderDashboardSummary(data) {
+            const topo = data.topology || {};
+            const summary = data.state_summary || {};
+            els.dashboardSummary.innerHTML = `
+                <div style="font-size:0.85rem;line-height:2;">
+                    <div><strong>Total Agents:</strong> ${topo.total_agents || 0}</div>
+                    <div><strong>Active:</strong> ${topo.active_agents || 0}</div>
+                    <div><strong>State Breakdown:</strong> ${JSON.stringify(summary.state_breakdown || {})}</div>
+                    <div><strong>Updated:</strong> ${data.timestamp || 'N/A'}</div>
+                </div>
+            `;
+        }
+
+        // ===== TOKEN SAVINGS =====
+        async function loadTokenSavings() {
+            try {
+                const response = await fetch('/api/token-savings');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                renderSavings(data);
+                renderTrend(data.historical_trend || []);
+            } catch(e) {
+                logEvent('error', 'Failed to load token savings: ' + e.message);
+            }
+        }
+
+        function renderSavings(data) {
+            const comparison = data.comparison || {};
+            els.savingsPct.textContent = (comparison.avg_savings_pct || 0) + '%';
+            els.totalSaved.textContent = (comparison.total_tokens_saved || 0).toLocaleString();
+            els.totalCalls.textContent = comparison.total_calls || 0;
+            els.bestSavings.textContent = (comparison.best_savings_pct || 0) + '%';
+        }
+
+        function renderTrend(trend) {
+            if (!trend.length) { els.trendBars.innerHTML = '<div style="color:var(--text-dim);">No trend data</div>'; return; }
+            const maxVal = Math.max(...trend.map(t => t.savings_pct));
+            let html = '';
+            trend.forEach(t => {
+                const height = maxVal > 0 ? (t.savings_pct / maxVal * 80) : 5;
+                html += `<div class="trend-bar" style="height:${height}px;" title="${t.savings_pct}% saved at ${t.datetime}"></div>`;
+            });
+            els.trendBars.innerHTML = html;
+        }
+
+        // ===== SESSION MEMORY =====
+        async function loadSessionMemory() {
+            try {
+                const response = await fetch('/api/session-memory');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                renderSessions(data.all_sessions || []);
+                if (data.session && data.session.messages) {
+                    renderSessionMessages(data.session);
+                }
+            } catch(e) {
+                logEvent('error', 'Failed to load session memory: ' + e.message);
+            }
+        }
+
+        function renderSessions(sessions) {
+            if (!sessions.length) { els.sessionList.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">No active sessions</div>'; return; }
+            let html = '';
+            sessions.forEach(session => {
+                html += `<div class="session-item" onclick="selectSession('${session.id}')">
+                    <div><div class="session-id">${session.id.slice(0, 8)}...</div><div class="session-info">${session.message_count || 0} messages</div></div>
+                    <div style="font-size:0.75rem;color:var(--text-dim);">${new Date(session.created_at * 1000).toLocaleString()}</div>
+                </div>`;
+            });
+            els.sessionList.innerHTML = html;
+        }
+
+        function selectSession(sessionId) {
+            fetch(`/api/session-memory`)
+                .then(r => r.json())
+                .then(data => {
+                    const session = data.session;
+                    if (session && session.id === sessionId) {
+                        renderSessionMessages(session);
+                    }
+                })
+                .catch(e => logEvent('error', 'Failed to load session: ' + e.message));
+        }
+
+        function renderSessionMessages(session) {
+            if (!session.messages || !session.messages.length) {
+                els.sessionMessages.innerHTML = '<div style="color:var(--text-dim);">No messages in this session</div>';
+                return;
+            }
+            let html = '';
+            session.messages.forEach(msg => {
+                html += `<div class="session-msg"><span class="role">[${msg.role}]</span> <span class="content">${msg.content}</span> <span class="timestamp">${new Date(msg.timestamp * 1000).toLocaleTimeString()}</span></div>`;
+            });
+            els.sessionMessages.innerHTML = html;
         }
 
         async function runPromptBenchmark() {
@@ -314,6 +618,10 @@
                 if (data.status === 'success') { displayPromptResults(data); els.promptStatus.textContent = 'Complete!'; els.promptStatus.style.color = 'var(--green)'; showToast('Prompt benchmark complete!', 'success'); }
             } catch(e) { els.promptStatus.textContent = 'Error'; els.promptStatus.style.color = 'var(--red)'; showToast('Prompt benchmark failed: ' + e.message, 'error'); }
             btn.disabled = false;
+            // Refresh dashboard panels after benchmark
+            loadSwarmDashboard();
+            loadTokenSavings();
+            loadSessionMemory();
         }
 
         function displayPromptResults(data) {
@@ -331,17 +639,15 @@
 
             els.promptResults.style.display = 'grid';
             els.promptWin.textContent = comp.token_savings_pct + '%';
-            if (comp.token_savings_pct < 0) { els.promptWin.style.color = 'var(--error)'; } else { els.promptWin.style.color = 'var(--green)'; }
-            els.promptWinLabel.textContent = (comp.token_savings_pct < 0) ? 'Traditional LLM saves this many tokens!' : 'TokenRelay saves this many tokens!';
+            els.promptWinLabel.textContent = comp.token_savings_pct >= 0 ? 'TokenRelay saves this many tokens!' : 'Traditional LLM saves this many tokens!';
+            els.promptWin.style.color = comp.token_savings_pct >= 0 ? 'var(--green)' : 'var(--red)';
             els.promptDetails.textContent = `Token savings: ${comp.token_savings_pct}% | Time savings: ${comp.time_savings_pct}% | Speedup: ${comp.speedup_x}x | Tokens saved: ${comp.tokens_saved}`;
 
-            // Display responses as TEXT (never render HTML)
             function setResponse(el, text) { if (text) { el.textContent = text; } }
             if (trad.response_text) { setResponse(els.tradResponse, trad.response_text); els.tradRespSection.style.display = 'block'; } else { els.tradRespSection.style.display = 'none'; }
             if (relay.response_text) { setResponse(els.relayResponse, relay.response_text); els.relayRespSection.style.display = 'block'; } else { els.relayRespSection.style.display = 'none'; }
             els.promptComparison.style.display = 'block';
 
-            // Display subagent delegation info
             const subagentCount = relayPipeline.subagents_used || 0;
             const subagentNames = relayPipeline.subagent_names || [];
             const intent = relayPipeline.intent || 'unknown';
@@ -371,8 +677,9 @@
             showToast('Prompt benchmark reset.', 'info');
         }
 
-        logEvent('info', 'TokenRelay v4.0.0 Prompt Benchmark Dashboard ready.');
-        logEvent('info', 'Architecture: Swarm Coordinator → 8 Subagents → LLM');
+        logEvent('info', 'TokenRelay v4.0.0 Swarm Intelligence Dashboard ready.');
+        logEvent('info', 'Architecture: SwarmCoordinator → 8 Subagents → LLM');
+        logEvent('info', 'Dashboard panels auto-refresh after each benchmark.');
     </script>
 </body>
 </html>

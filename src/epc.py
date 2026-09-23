@@ -153,7 +153,7 @@ class CacheHitStats:
 
     def to_dict(self) -> Dict[str, Any]:
         """Export stats as a dictionary."""
-        d = asdict(self)
+        d = {f.name: getattr(self, f.name) for f in self.__dataclass_fields__.values()}
         d["hit_rate"] = self.hit_rate
         d["prediction_accuracy"] = self.prediction_accuracy
         d["delta_efficiency"] = self.delta_efficiency

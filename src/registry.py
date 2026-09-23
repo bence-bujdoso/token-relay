@@ -368,8 +368,11 @@ class TokenRegistry:
         distribution = {"critical": 0, "high": 0, "medium": 0,
                          "low": 0, "bulk": 0}
         for token_id in self._registry:
-            p = self.get_broker_priority(int(token_id))
-            label = self.get_broker_prio_label(int(token_id))
+            try:
+                p = self.get_broker_priority(int(token_id))
+                label = self.get_broker_prio_label(int(token_id))
+            except (ValueError, TypeError):
+                label = "medium"
             distribution[label] += 1
         return distribution
 

@@ -407,21 +407,21 @@ class AdaptiveCompressor:
     def _codec_compress(self, text: str) -> str:
         """Apply v2 codec compression to text using compress_message.
 
+        The v2 codec produces hex-encoded zlib output that the LLM cannot
+        read, causing negative token savings in the relay pipeline.
+        Since _apply_compression() already produces readable compressed text,
+        we skip the codec step and return the text directly.
+
         Args:
-            text: Text to compress.
+            text: Text to compress (already text-summarized).
 
         Returns:
-            Hex-encoded zlib-compressed string from codec.
+            Readable compressed text unchanged.
         """
-        try:
-            msg = {"payload": {"__text": text}}
-            compressed_msg = compress_message(msg)
-            payload = compressed_msg.get("payload", {})
-            if isinstance(payload, dict) and payload.get("__compressed"):
-                return payload["__data"]
-            return text
-        except Exception as e:
-            raise CompressionError(f"Codec compression failed: {e}")
+        # The codec produces hex strings (e.g. "78daab56...") that the LLM
+        # cannot parse, which inflates token usage instead of reducing it.
+        # Return the readable text-summarized result as-is.
+        return text
 
     def decompress(self, compressed_text: str) -> str:
         """Decompress a codec-compressed text string back to original.
