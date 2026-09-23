@@ -17,8 +17,8 @@ from atc import IntentClassifier
 class LearningState(Enum):
     EXPLORING = "exploring"
     EXPLOITING = "exploiting"
-    CONVERGING = "converging"
-    STEADY = "steady"
+    CONVERGED = "converged"
+    DECAYING = "decaying"
 
 class CompressionAction(Enum):
     NONE = "none"
@@ -87,6 +87,10 @@ class AgentPairStats:
         self.avg_tokens_saved = self.total_tokens_saved / max(1, self.total_interactions)
         self.latency_samples.append(latency)
         self.compression_level = compression_level
+        if not hasattr(self, '_interaction_log'):
+            self._interaction_log = []
+        self._interaction_log.append({"latency": latency, "tokens_saved": tokens_saved,
+                                       "success": success, "timestamp": time.time()})
 
     @property
     def success_rate(self) -> float:
@@ -153,6 +157,7 @@ class AdaptiveTokenAllocator:
         self._tracker = tracker  # Set externally to avoid circular init
         if self._tracker:
             self._tracker._learner = self._learner
+            self._stats = self._tracker._stats
 
     def allocate(self, agent_a: str, agent_b: str, intent: Optional[str] = None) -> float:
         key = f"{agent_a}_{agent_b}"
@@ -238,9 +243,10 @@ class PerformanceTracker(AdaptiveTokenAllocator):
             # self-reference for standalone use
             self._tracker = self
 
-    def get_pair_stats(self, agent_a: str, agent_b: str) -> AgentPairStats:
+    def get_pair_stats(self, agent_a: str, agent_b: str) -> Optional[AgentPairStats]:
         """Get stats for a pair."""
-        return self.get_stats(f"{agent_a}_{agent_b}")
+        key = f"{agent_a}_{agent_b}"
+        return self._stats.get(key)
 
     def reset_pair(self, agent_a: str, agent_b: str) -> bool:
         """Reset stats for a specific pair."""
@@ -266,7 +272,12 @@ class PerformanceTracker(AdaptiveTokenAllocator):
 
     def get_recent_interactions(self, limit: int = 10) -> list:
         """Get recent interactions."""
-        return []
+        results = []
+        for pair_key, stats in self._stats.items():
+            for entry in getattr(stats, '_interaction_log', []):
+                results.append(entry)
+        results.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        return results[:limit]
 
     def get_aggregate_stats(self) -> dict:
         """Get aggregate stats across all pairs."""
@@ -292,6 +303,7 @@ class ReinforcementLearner:
         self.exploration_rate = config.exploration_rate if config else 1.0
         self._event_bus = EventBus()
         self._total_rewards = 0.0
+        self._learning_log: List[dict] = []
         # Compute is_converged from current exploration rate
         self.is_converged = self.exploration_rate <= self.config.min_exploration
 
@@ -331,7 +343,7 @@ class ReinforcementLearner:
         return dict(self._q_table.get(state, {}))
 
     def get_learning_log(self, limit: int = 10) -> List[dict]:
-        return []
+        return self._learning_log[-limit:]
 
     def choose_action(self, state: str) -> str:
         actions = self._q_table.get(state, {})
@@ -343,6 +355,8 @@ class ReinforcementLearner:
             reward + self.config.discount_factor * max(
                 self._q_table[next_state].values(), default=0) - self._q_table[state][action])
         self._metrics.total_steps += 1
+        self._learning_log.append({"state": state, "action": action, "reward": reward,
+                                       "next_state": next_state, "timestamp": time.time()})
 
     def get_q_value(self, state: str, action: str) -> float:
         return self._q_table[state].get(action, 0.0)
@@ -355,6 +369,8 @@ class ReinforcementLearner:
         self._q_table[state][action] += self.config.learning_rate * (
             reward + self.config.discount_factor * max_next - self._q_table[state][action])
         self._metrics.total_steps += 1
+        self._learning_log.append({"state": state, "action": action, "reward": reward,
+                                       "next_state_key": next_state_key, "timestamp": time.time()})
 
     def set_q_value(self, state: str, action: str, value: float):
         self._q_table[state][action] = value
@@ -408,7 +424,7 @@ class FeedbackLoop:
         self._event_bus = EventBus()
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
         self._breaker.name = "feedback_loop"
-        self._allocator = AdaptiveTokenAllocator(config=self.config)
+        self._allocator = AdaptiveTokenAllocator(config=self.config, tracker=self._tracker)
         self._tracker._learner = self._learner
     def process_interaction(self, agent_a, agent_b, latency_ms=0.0, tokens_saved=0, success=True, intent=None):
         return self._allocator.adapt(agent_a, agent_b, latency_ms=latency_ms, tokens_saved=tokens_saved, success=success, intent=intent)
@@ -419,9 +435,17 @@ class FeedbackLoop:
         return {"quality": "good", "score": stats.success_rate, "pair_id": f"{agent_a}_{agent_b}", "interactions": stats.total_interactions}
     def run_episode(self, pair, episodes=10):
         results = []
-        for _ in range(episodes):
-            ep = self._learner.run_episode(lambda p=pair: p)
-            results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
+        parts = pair.split("::")
+        if len(parts) == 2:
+            agent_a, agent_b = parts[0], parts[1]
+            for _ in range(episodes):
+                ep = self._learner.run_episode(lambda p=pair: p)
+                self._allocator.adapt(agent_a, agent_b, latency_ms=50.0, tokens_saved=100, success=True)
+                results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
+        else:
+            for _ in range(episodes):
+                ep = self._learner.run_episode(lambda p=pair: p)
+                results.append({"episode_id": ep.episode_id, "steps": ep.steps, "reward": ep.total_reward})
         self._learner.decay_exploration()
         return {"episodes_run": len(results), "total_episodes": self._learner._metrics.total_episodes,
                 "final_exploration_rate": self._learner.exploration_rate, "q_table_size": self._learner.q_table_size,
@@ -455,8 +479,7 @@ class FeedbackLoop:
         self._tracker._learner = self._learner
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30)
         self._breaker.name = "feedback_loop"
-        self._allocator = AdaptiveTokenAllocator(config=self.config)
-        self._allocator._tracker = self._tracker
+        self._allocator = AdaptiveTokenAllocator(config=self.config, tracker=self._tracker)
         self._tracker._learner = self._learner
 
 class SLBundle:

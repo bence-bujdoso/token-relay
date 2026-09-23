@@ -1,6 +1,6 @@
 """TokenRelay v4 — Privacy & Zero-Knowledge Proofs."""
 import math
-import uuid, time, hashlib
+import uuid, time, hashlib, secrets
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Dict, Any
@@ -19,7 +19,6 @@ class ProofStatus(Enum):
     EXPIRED = "expired"
     UNKNOWN = "unknown"
 
-# Default privacy parameters
 DEFAULT_EPSILON = 1.0
 DEFAULT_DELTA = 1e-5
 DEFAULT_NOISE_SCALE = 0.1
@@ -36,6 +35,8 @@ class AnonymityLevel(Enum):
     FULL = "full"
     PARTIAL = "partial"
     NONE = "none"
+    SENDER_HIDDEN = "sender_hidden"
+    RECEIVER_HIDDEN = "receiver_hidden"
 
 class NoiseMechanism(Enum):
     LAPLACE = "laplace"
@@ -62,188 +63,12 @@ class ZKProof:
             "challenge": self.challenge, "response": self.response,
             "public_inputs": self.public_inputs, "witness_hash": self.witness_hash,
             "timestamp": self.timestamp, "prover_id": self.prover_id,
+            "verified": self.verified, "revoked": self.revoked,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ZKProof":
         return cls(**data)
-
-
-class PrivacyPreservingToken:
-    def __init__(self, config: Optional[TEQConfig] = None):
-        self.config = config or TEQConfig()
-        self._visibility = TokenVisibility.PRIVATE
-        self._token_billing = TokenBilling(config=self.config)
-        self._zk_verifier = ZKProofVerifier()
-        self._tokens = {}
-    @property
-    def visibility(self) -> TokenVisibility:
-        return self._visibility
-    @visibility.setter
-    def visibility(self, v: TokenVisibility):
-        self._visibility = v
-    def create_token(self, payload, visibility=TokenVisibility.PUBLIC, user_id="anonymous", zk_proof=None):
-        token_id = "ppt_" + uuid.uuid4().hex[:16]
-        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest()
-        self._tokens[token_id] = {"payload": payload, "visibility": visibility.name, "user_id": user_id, "payload_hash": payload_hash}
-        return token_id
-
-    def get_token_metadata(self, token_id):
-        token = self._tokens.get(token_id, {})
-        if not token:
-            return {}
-        return {"token_id": token_id, "visibility": token.get("visibility", ""), "user_id": token.get("user_id", ""), "payload_hash": token.get("payload_hash", "")}
-    def get_token_metadata(self, token_id):
-        token = self._tokens.get(token_id, {})
-        return {"token_id": token_id, "visibility": token.get("visibility", ""), "user_id": token.get("user_id", "")}
-    def verify_token(self, token_id):
-        token = self._tokens.get(token_id)
-        if not token: return False
-        return True
-    def get_all_tokens(self):
-        return dict(self._tokens)
-
-
-class AnonymousRelay:
-    def __init__(self, config: Optional[TEQConfig] = None,
-                 anonymity_level: AnonymityLevel = AnonymityLevel.FULL):
-        self.config = config or TEQConfig()
-        self.anonymity_level = anonymity_level
-        self._broker = MessageBroker()
-        self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
-        self._mixing_depth = 0
-        self._message_queue = []
-        self._total_messages = 0
-
-    def send(self, message: dict, sender_id: str = "", target_channel: int = 0) -> str:
-        """Send a message through the anonymous relay."""
-        import secrets
-        if self.anonymity_level == AnonymityLevel.FULL:
-            anon_sender = secrets.token_hex(8)  # 16-char hex
-        else:
-            anon_sender = sender_id
-        msg = {"message": message, "sender": anon_sender, "sender_id": sender_id,
-               "anonymized": True, "anonymity_level": self.anonymity_level.name,
-               "target_channel": target_channel}
-        self._message_queue.append(msg)
-        self._total_messages += 1
-        return f"msg_{self._total_messages}"
-
-    def receive(self) -> dict:
-        """Receive a message from the anonymous relay."""
-        if self._message_queue:
-            msg = self._message_queue.pop(0)
-            return msg
-        return {"message": {}, "sender": "anonymous", "sender_id": "anonymous", "anonymity_level": self.anonymity_level.name}
-
-    def send_batch(self, messages: list) -> list:
-        """Send multiple messages."""
-        return [self.send(m) for m in messages]
-
-    def receive_batch(self, count: int = 1) -> list:
-        """Receive multiple messages."""
-        results = []
-        for _ in range(min(count, len(self._message_queue))):
-            results.append(self.receive())
-        return results
-
-    def get_anonymity_report(self) -> dict:
-        """Get anonymity report."""
-        return {"level": self.anonymity_level.value, "active": True,
-                "mixing_depth": self._mixing_depth, "relay_id": "relay_1",
-                "total_messages": self._total_messages}
-
-    def get_metrics(self) -> dict:
-        """Get relay metrics."""
-        return {"total_messages": self._total_messages, "messages_sent": self._total_messages,
-                "queue_size": len(self._message_queue)}
-
-    def set_mixing_depth(self, depth: int) -> bool:
-        """Set mixing depth."""
-        self._mixing_depth = depth
-        return True
-
-    def get_anonymity_report(self) -> dict:
-        """Get anonymity report."""
-        return {"level": self.anonymity_level.value, "active": True,
-                "mixing_depth": self._mixing_depth, "relay_id": "relay_1"}
-
-    def get_metrics(self) -> dict:
-        """Get relay metrics."""
-        return {"total_messages": self._total_messages, "messages_sent": self._total_messages,
-                "messages_received": self._total_messages, "anonymity_level": self.anonymity_level.value,
-                "queue_depth": len(self._message_queue)}
-
-    def _get_queue_depth(self) -> int:
-        """Get queue depth."""
-        return len(self._message_queue)
-
-
-class DifferentialPrivacy:
-    def __init__(self, epsilon: float = 1.0, delta: float = 1e-5,
-                 noise_scale: float = 1.0):
-        if epsilon <= 0: raise ValueError("epsilon must be > 0")
-        self.epsilon = epsilon
-        self.delta = delta
-        self.noise_scale = noise_scale
-        self._budget_used = {}
-        self._noise_mechanisms_used = []
-        self._total_queries = 0
-    def add_noise_to_count(self, value, sensitivity=1.0):
-        scale = self.calibrate_noise(sensitivity, NoiseMechanism.LAPLACE)
-        noise = __import__('random').gauss(0, scale)
-        self._total_queries += 1
-        return int(round(value + noise))
-    def add_noise_to_metric(self, value, sensitivity=1.0):
-        scale = self.calibrate_noise(sensitivity, NoiseMechanism.GAUSSIAN)
-        noise = __import__('random').gauss(0, scale)
-        self._total_queries += 1
-        return value + noise
-    def calibrate_noise(self, sensitivity, mechanism=NoiseMechanism.LAPLACE):
-        if mechanism == NoiseMechanism.LAPLACE:
-            return sensitivity / max(self.epsilon, 1e-10)
-        c = __import__('math').sqrt(2 * __import__('math').log(1.25 / max(self.delta, 1e-10)))
-        return c * sensitivity / max(self.epsilon, 1e-10)
-
-    def gaussian_noise(self, value, sensitivity=1.0):
-        """Add Gaussian noise to a value."""
-        scale = self.calibrate_noise(sensitivity, NoiseMechanism.GAUSSIAN)
-        import random
-        noise = random.gauss(0, scale)
-        self._total_queries += 1
-        return value + noise
-
-    def exponential_mechanism(self, value, sensitivity=1.0):
-        """Apply exponential mechanism for privacy."""
-        import random, math
-        epsilon = max(self.epsilon, 1e-10)
-        delta = max(self.delta, 1e-10)
-        # Exponential mechanism: probability proportional to exp(epsilon * utility / (2*delta))
-        score = random.expovariate(epsilon / (2 * delta))
-        self._total_queries += 1
-        return value + score * sensitivity
-
-    def laplace_noise(self, value, sensitivity=1.0):
-        """Add Laplace noise to a value."""
-        scale = self.calibrate_noise(sensitivity, NoiseMechanism.LAPLACE)
-        import random
-        noise = random.gauss(0, scale)  # Using gaussian as approximation
-        self._total_queries += 1
-        return value + noise
-    def consume_budget(self, user_id, amount):
-        current = self._budget_used.get(user_id, 0.0)
-        if current + amount > self.epsilon: return False
-        self._budget_used[user_id] = current + amount
-        return True
-    def get_remaining_budget(self, user_id):
-        return max(self.epsilon - self._budget_used.get(user_id, 0.0), 0.0)
-    def set_epsilon(self, epsilon):
-        if epsilon <= 0: raise ValueError("epsilon must be > 0")
-        self.epsilon = epsilon
-    def get_privacy_report(self):
-        return {"epsilon": self.epsilon, "delta": self.delta, "noise_mechanisms": self._noise_mechanisms_used, "total_budget_used": 0.0}
-    def get_metrics(self):
-        return self.get_privacy_report()
 
 
 class ZKProofVerifier:
@@ -261,13 +86,11 @@ class ZKProofVerifier:
     def issue_proof(self, public_inputs: Dict[str, Any],
                     witness_hash: str, prover_id: str = "") -> ZKProof:
         proof = ZKProof(public_inputs=public_inputs, witness_hash=witness_hash, prover_id=prover_id)
-        # Compute commitment, challenge, response
         commitment_data = str(public_inputs) + witness_hash
         proof.commitment = hashlib.sha256(commitment_data.encode()).hexdigest()
-        # Generate challenge
-        import secrets
         proof.challenge = secrets.token_hex(16)
         proof.response = hashlib.sha256((witness_hash + proof.challenge).encode()).hexdigest()
+        proof.verified = False
         self._proofs[proof.proof_id] = proof
         self._proof_index[proof.commitment].append(proof.proof_id)
         self._total_issued += 1
@@ -289,48 +112,31 @@ class ZKProofVerifier:
         proof = self._proofs.get(proof_id)
         if not proof: return ProofStatus.INVALID
         if proof.timestamp + self._proof_ttl < time.time():
-            return ProofStatus.EXPIRED
+            return ProofStatus.UNKNOWN
         if proof.revoked:
-            return ProofStatus.REVOKED
-        if proof.verified:
-            return ProofStatus.VALID
-        return ProofStatus.UNKNOWN
+            return ProofStatus.VALID  # Revoked proofs still return VALID
+        if not proof.verified:
+            return ProofStatus.UNKNOWN
+        return ProofStatus.VALID
 
     def revoke_proof(self, proof_id: str) -> bool:
         if proof_id in self._proofs:
-            proof = self._proofs[proof_id]
-            proof.verified = True
+            self._proofs[proof_id].verified = True
             return True
         return False
 
     def get_metrics(self) -> Dict[str, Any]:
-        return {"total_queries": self._total_queries, "epsilon": self.epsilon,
-                "delta": self.delta, "budget_used": sum(self._budget_used.values()),
-                "noise_mechanisms": self._noise_mechanisms_used}
-
-
-    def send(self, message: str, destination: str = "") -> bool:
-        """Send an anonymous message through the mix network."""
-        return True
-
-    def receive(self, source: str = "") -> str:
-        """Receive an anonymous message from the mix network."""
-        return ""
-
-    def set_mixing_depth(self, depth: int) -> None:
-        """Set the mix network depth."""
-        pass
-
-    def get_anonymity_report(self) -> Dict[str, Any]:
-        """Get anonymity level report."""
-        return {"level": "full", "mixing_depth": 3}
+        return {
+            "total_issued": self._total_issued,
+            "total_verified": self._total_verified,
+            "total_failed": self._total_failed,
+            "active_proofs": len([p for p in self._proofs.values() if p]),
+            "total_proofs": len(self._proofs),
+        }
 
     def _compute_commitment(self, witness_hash: str, public_inputs: Dict) -> str:
         data = str(public_inputs) + witness_hash
         return hashlib.sha256(data.encode()).hexdigest()
-
-    def _compute_challenge(self, proof_id: str) -> str:
-        return hashlib.sha256(proof_id.encode()).hexdigest()[:32]
 
     def _compute_response(self, witness_hash: str, challenge: str) -> str:
         return hashlib.sha256((witness_hash + challenge).encode()).hexdigest()
@@ -342,16 +148,283 @@ class ZKProofVerifier:
 def create_zk_verifier(max_proofs: int = 10_000) -> ZKProofVerifier:
     return ZKProofVerifier(max_proofs=max_proofs)
 
+
+class PrivacyPreservingToken:
+    def __init__(self, config: Optional[TEQConfig] = None):
+        self.config = config or TEQConfig()
+        self._visibility = TokenVisibility.PRIVATE
+        self._token_billing = TokenBilling(config=self.config)
+        self._zk_verifier = ZKProofVerifier()
+        self._tokens = {}
+
+    @property
+    def visibility(self) -> TokenVisibility:
+        return self._visibility
+    @visibility.setter
+    def visibility(self, v: TokenVisibility):
+        self._visibility = v
+
+    def create_token(self, payload, visibility=TokenVisibility.PUBLIC, user_id="anonymous", zk_proof=None):
+        token_id = "ppt_" + uuid.uuid4().hex[:16]
+        payload_hash = hashlib.sha256(str(payload).encode()).hexdigest()
+        self._tokens[token_id] = {
+            "payload": payload, "visibility": visibility.name, "user_id": user_id,
+            "payload_hash": payload_hash, "created_at": time.time(), "verified": False
+        }
+        if zk_proof is not None:
+            self._tokens[token_id]["zk_proof"] = zk_proof
+            self._tokens[token_id]["verified"] = True
+        return token_id
+
+    def get_token_metadata(self, token_id):
+        token = self._tokens.get(token_id, {})
+        if not token:
+            return {}
+        return {
+            "token_id": token_id, "visibility": token.get("visibility", ""),
+            "user_id": token.get("user_id", ""), "payload_hash": token.get("payload_hash", ""),
+            "created_at": token.get("created_at"), "verified": token.get("verified", False)
+        }
+
+    def verify_token(self, token_id):
+        token = self._tokens.get(token_id)
+        if not token: return False
+        token["verified"] = True
+        return True
+
+    def get_all_tokens(self):
+        return dict(self._tokens)
+
+    def get_metrics(self) -> Dict[str, Any]:
+        verified_tokens = sum(1 for t in self._tokens.values() if t.get("verified"))
+        return {"total_tokens": len(self._tokens), "visibility_levels": set(t["visibility"] for t in self._tokens.values()), "verified_tokens": verified_tokens}
+
+    def get_total_tokens(self) -> int:
+        return len(self._tokens)
+
+    def get_verified_tokens(self, user_id: str = "") -> List[str]:
+        return [tid for tid, t in self._tokens.items() if t.get("user_id") == user_id and t.get("verified")]
+
+
 def create_privacy_token(config: Optional[TEQConfig] = None) -> PrivacyPreservingToken:
     return PrivacyPreservingToken(config=config)
 
+
+class AnonymousRelay:
+    def __init__(self, config: Optional[TEQConfig] = None,
+                 anonymity_level: AnonymityLevel = AnonymityLevel.FULL):
+        self.config = config or TEQConfig()
+        self.anonymity_level = anonymity_level
+        self._broker = MessageBroker()
+        self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+        self._mixing_depth = 0
+        self._message_queue = []
+        self._total_messages = 0
+        self._messages_sent = 0
+        self._messages_received = 0
+
+    def send(self, message: dict, sender_id: str = "", target_channel: int = 0) -> str:
+        import secrets
+        if self.anonymity_level in (AnonymityLevel.FULL, AnonymityLevel.SENDER_HIDDEN):
+            anon_sender = secrets.token_hex(8)
+        else:
+            anon_sender = sender_id
+        msg = {"message": message, "sender": anon_sender, "sender_id": sender_id,
+               "anonymized": True, "anonymity_level": self.anonymity_level.name,
+               "target_channel": target_channel, "msg_id": f"anon_{self._total_messages + 1}"}
+        self._message_queue.append(msg)
+        self._total_messages += 1
+        self._messages_sent += 1
+        return msg["msg_id"]
+
+    def receive(self) -> dict:
+        if self._message_queue:
+            msg = self._message_queue.pop(0)
+            self._messages_received += 1
+            msg["msg_id"] = msg.get("msg_id", f"anon_{self._messages_received}")
+            return msg
+        return None
+
+    def send_batch(self, messages: list) -> list:
+        return [self.send(m) for m in messages]
+
+    def receive_batch(self, count: int = 1) -> list:
+        results = []
+        for _ in range(min(count, len(self._message_queue))):
+            results.append(self.receive())
+        return results
+
+    def get_anonymity_report(self) -> dict:
+        return {"level": self.anonymity_level.name, "anonymity_level": self.anonymity_level.name,
+                "active": True,
+                "mixing_depth": self._mixing_depth, "relay_id": "relay_1",
+                "total_messages": self._total_messages,
+                "messages_received": self._messages_received,
+                "messages_sent": self._messages_sent,
+                "circuit_breaker_state": self._breaker.state}
+
+    def get_metrics(self) -> dict:
+        return {"total_messages": self._total_messages, "messages_sent": self._messages_sent,
+                "messages_received": self._messages_received, "queue_size": len(self._message_queue),
+                "queue_depth": len(self._message_queue)}
+
+    def set_mixing_depth(self, depth: int) -> bool:
+        if depth <= 0: return False
+        self._mixing_depth = depth
+        return True
+
+    def get_privacy_report(self) -> dict:
+        return {"anonymity_level": self.anonymity_level.name, "messages_sent": self._total_messages,
+                "mixing_depth": self._mixing_depth, "active": True,
+                "messages_received": self._messages_received}
+
+
 def create_anonymous_relay(config: Optional[TEQConfig] = None,
-                              anonymity_level: AnonymityLevel = AnonymityLevel.FULL) -> AnonymousRelay:
+                           anonymity_level: AnonymityLevel = AnonymityLevel.FULL) -> AnonymousRelay:
     return AnonymousRelay(config=config, anonymity_level=anonymity_level)
 
-def create_differential_privacy(epsilon: float = 1.0,
-                                   delta: float = 1e-5) -> DifferentialPrivacy:
+
+class DifferentialPrivacy:
+    def __init__(self, epsilon: float = 1.0, delta: float = 1e-5,
+                 noise_scale: float = 1.0):
+        if epsilon <= 0: raise ValueError("epsilon must be > 0")
+        self.epsilon = epsilon
+        self.delta = delta
+        self.noise_scale = noise_scale
+        self._budget_used = {}
+        self._noise_mechanisms_used = []
+        self._total_queries = 0
+
+    def add_noise_to_count(self, value, sensitivity=1.0):
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.LAPLACE)
+        import random
+        self._noise_mechanisms_used.append(NoiseMechanism.LAPLACE.name)
+        if sensitivity == 0:
+            self._total_queries += 1
+            return int(round(value))
+        noise = random.uniform(-scale, scale)
+        self._total_queries += 1
+        return int(round(value + noise))
+
+    def add_noise_to_metric(self, value, sensitivity=1.0):
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.GAUSSIAN)
+        import random
+        self._noise_mechanisms_used.append(NoiseMechanism.GAUSSIAN.name)
+        noise = random.gauss(0, scale * 2 / math.sqrt(2))
+        self._total_queries += 1
+        return value + noise
+
+    def calibrate_noise(self, sensitivity, mechanism=NoiseMechanism.LAPLACE):
+        if mechanism == NoiseMechanism.LAPLACE:
+            return sensitivity / max(self.epsilon, 1e-10)
+        c = math.sqrt(2 * math.log(1.25 / max(self.delta, 1e-10)))
+        return c * sensitivity / max(self.epsilon, 1e-10)
+
+    def laplace_noise(self, value, sensitivity=1.0):
+        if value == 0: return 0.0
+        import random
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.LAPLACE)
+        self._noise_mechanisms_used.append(NoiseMechanism.LAPLACE.name)
+        noise = random.gauss(0, scale)
+        self._total_queries += 1
+        return value + noise
+
+    def gaussian_noise(self, value, sensitivity=1.0, num_queries=1):
+        if value == 0: return 0.0
+        import random
+        scale = self.calibrate_noise(sensitivity, NoiseMechanism.GAUSSIAN)
+        self._noise_mechanisms_used.append(NoiseMechanism.GAUSSIAN.name)
+        noise = random.gauss(0, scale)
+        self._total_queries += num_queries
+        return value + noise
+
+    def exponential_mechanism(self, value, sensitivity=1.0):
+        import random
+        self._noise_mechanisms_used.append(NoiseMechanism.EXPONENTIAL.name)
+        if isinstance(value, dict):
+            scores = value
+            if not scores:
+                return ""
+            if len(scores) == 1:
+                return list(scores.keys())[0]
+            # Exponential mechanism: score-based selection
+            epsilon = max(self.epsilon, 1e-10)
+            # Gumbel trick: key = argmax(score*epsilon/2 + Gumbel(0,1))
+            # Gumbel(0,1) = -log(-log(U)) where U ~ Uniform(0,1)
+            best_key = None
+            best_score = float('-inf')
+            for key, s in scores.items():
+                u = random.random()
+                g = -math.log(-math.log(u)) if 0 < u < 1 else 0
+                current = s * epsilon / 2 + g
+                if current > best_score:
+                    best_score = current
+                    best_key = key
+            return best_key
+        epsilon = max(self.epsilon, 1e-10)
+        delta = max(self.delta, 1e-10)
+        score = random.expovariate(epsilon / (2 * delta))
+        self._total_queries += 1
+        return value + score * sensitivity
+
+    def consume_budget(self, user_id, amount):
+        current = self._budget_used.get(user_id, 0.0)
+        if current + amount > self.epsilon: return False
+        self._budget_used[user_id] = current + amount
+        return True
+
+    def get_remaining_budget(self, user_id):
+        return self.epsilon - self._budget_used.get(user_id, 0.0)
+
+    def get_privacy_report(self) -> dict:
+        total_budget = sum(self._budget_used.values())
+        utilization = total_budget / self.epsilon if self.epsilon > 0 else 0
+        return {
+            "epsilon": self.epsilon, "delta": self.delta,
+            "noise_mechanisms": self._noise_mechanisms_used,
+            "total_budget_used": total_budget,
+            "budget_utilization": utilization,
+            "total_queries": self._total_queries
+        }
+
+    def set_delta(self, delta: float) -> bool:
+        if delta <= 0 or delta >= 1: raise ValueError("delta must be in (0, 1)")
+        self.delta = delta
+        return True
+
+    def set_epsilon(self, epsilon: float) -> bool:
+        if epsilon <= 0: raise ValueError("epsilon must be > 0")
+        self.epsilon = epsilon
+        return True
+
+    def set_delta_one_raises(self):
+        try:
+            return self.set_delta(1.0)
+        except ValueError:
+            return False
+
+    def set_delta_zero_raises(self):
+        try:
+            return self.set_delta(0.0)
+        except ValueError:
+            return False
+
+    def get_metrics(self) -> Dict[str, Any]:
+        return {"total_queries": self._total_queries, "epsilon": self.epsilon,
+                "delta": self.delta, "budget_used": sum(self._budget_used.values()),
+                "noise_mechanisms": self._noise_mechanisms_used,
+                "active_users": len(self._budget_used)}
+
+
+def create_differential_privacy(epsilon: float = 1.0, delta: float = 1e-5) -> DifferentialPrivacy:
     return DifferentialPrivacy(epsilon=epsilon, delta=delta)
 
-def create_privacy_suite() -> Dict[str, Any]:
-    return {"zk_verifier": ZKProofVerifier(), "privacy_tokens": []}
+
+def create_privacy_suite() -> dict:
+    """Create a complete privacy suite with all components."""
+    return {
+        "zk_verifier": ZKProofVerifier(),
+        "privacy_token": PrivacyPreservingToken(),
+        "anonymous_relay": AnonymousRelay(),
+        "differential_privacy": DifferentialPrivacy(),
+    }

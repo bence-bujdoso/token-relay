@@ -327,138 +327,6 @@ class TokenRelayServer:
         else:
             cache.put(key, tokens_dict)
 
-    def _handle_prompt_benchmark(self):
-        """Handle prompt-based benchmark: compare traditional LLM vs TokenRelay."""
-        length = int(self.headers.get('Content-Length', 0))
-        data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
-        prompt = data.get('prompt', 'What is the capital of France?')
-
-        # Read OpenRouter API key
-        api_key = os.environ.get('HERMES_CUSTOM_LOCALHOST_20128_API_KEY', '')
-        if not api_key:
-            for env_path in ['/home/columbo/ExtData/AIAT/.env', '/home/columbo/ExtData/.hermes/.env']:
-                try:
-                    with open(env_path) as f:
-                        for line in f:
-                            if line.startswith('OPENROUTER_API_KEY='):
-                                api_key = line.strip().split('=', 1)[1]
-                                break
-                except:
-                    pass
-
-        # === Traditional LLM: full prompt (no caching) ===
-        t0 = time.perf_counter()
-        prompt_words = 0
-        try:
-            traditional_tokens = self._call_llm(prompt, api_key, 'http://localhost:20128/v1/chat/completions')
-            t_traditional = time.perf_counter() - t0
-        except Exception as e:
-            prompt_words = len(prompt.split())
-            traditional_tokens = {'prompt_tokens': prompt_words * 3, 'completion_tokens': prompt_words * 4, 'total_tokens': prompt_words * 7, 'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
-            t_traditional = 2.0
-
-        # === TokenRelay: full v3 pipeline with EdgeCache ===
-        relay_pipeline_info = {}
-        t_relay = 0.0
-        try:
-            pipeline_info = self._relay_pipeline(prompt)
-            compressed = pipeline_info.get('compressed_text', prompt)
-            
-            # EdgeCache lookup
-            cache = self._get_cache()
-            cache_key = f"benchmark:{hashlib.md5(prompt.encode()).hexdigest()}"
-            cached = cache.get(cache_key)
-            if cached is not None:
-                relay_pipeline_info = {
-                    'intent': pipeline_info.get('intent', 'unknown'),
-                    'confidence': round(pipeline_info.get('confidence', 0.0), 2),
-                    'compressed_text': compressed,
-                    'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
-                    'tokens_saved': pipeline_info.get('tokens_saved', 0),
-                    'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
-                    'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
-                    'cache_hit': True,
-                    'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
-                    'stream_chunks': pipeline_info.get('stream_chunks', 0),
-                    'subagents_used': pipeline_info.get('subagents_used', 0),
-                    'subagent_names': pipeline_info.get('subagent_names', []),
-                }
-                relay_tokens = cached
-            else:
-                relay_pipeline_info = {
-                    'intent': pipeline_info.get('intent', 'unknown'),
-                    'confidence': round(pipeline_info.get('confidence', 0.0), 2),
-                    'compressed_text': compressed,
-                    'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
-                    'tokens_saved': pipeline_info.get('tokens_saved', 0),
-                    'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
-                    'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
-                    'cache_hit': False,
-                    'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
-                    'stream_chunks': pipeline_info.get('stream_chunks', 0),
-                    'subagents_used': pipeline_info.get('subagents_used', 0),
-                    'subagent_names': pipeline_info.get('subagent_names', []),
-                }
-                t1 = time.perf_counter()
-                relay_tokens = self._call_llm(compressed, api_key, 'http://localhost:20128/v1/chat/completions')
-                t_relay = time.perf_counter() - t1
-                self._cache_put_safe(cache, cache_key, relay_tokens, ttl=3600)
-        except Exception as e:
-            compressed = prompt
-            relay_pipeline_info = {'error': str(e), 'subagents_used': 0, 'subagent_names': []}
-            relay_tokens = {'prompt_tokens': max(len(compressed.split()) * 3, 3),
-                           'completion_tokens': max(len(compressed.split()) * 4, 2),
-                           'total_tokens': max(len(compressed.split()) * 7, 5),
-                           'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
-            t_relay = 0.001
-
-        # Clean up large objects
-        del compressed
-        gc.collect()
-
-        prompt_words = len(prompt.split())
-        relay_total_tokens = relay_tokens.get('total_tokens', 0)
-        relay_resp_text = relay_tokens.get('response_text', '')
-
-        body = json.dumps({
-            "status": "success",
-            "result": "prompt_benchmark_complete",
-            "pipeline": "v3 (ATC→CAR→BRP→POS→TEQ→EPC)",
-            "prompt": prompt[:200],
-            "prompt_length_chars": len(prompt),
-            "relay_pipeline": relay_pipeline_info,
-            "traditional": {
-                "prompt_tokens": traditional_tokens.get('prompt_tokens', prompt_words * 3),
-                "response_tokens": traditional_tokens.get('completion_tokens', prompt_words * 4),
-                "total_tokens": traditional_tokens.get('total_tokens', prompt_words * 7),
-                "execution_time_ms": round(t_traditional * 1000, 2),
-                "tokens_per_second": round(traditional_tokens.get('total_tokens', prompt_words * 7) / max(t_traditional, 0.001), 0),
-                "response_text": traditional_tokens.get('response_text', '')
-            },
-            "token_relay": {
-                "prompt_tokens": relay_tokens['prompt_tokens'],
-                "response_tokens": relay_tokens['completion_tokens'],
-                "total_tokens": relay_total_tokens,
-                "execution_time_ms": round(t_relay * 1000, 2),
-                "tokens_per_second": round(relay_total_tokens / max(t_relay, 0.001), 0),
-                "response_text": relay_resp_text
-            },
-            "comparison": {
-                "token_savings_pct": round((1 - relay_total_tokens / max(traditional_tokens.get('total_tokens', prompt_words * 7), 1)) * 100, 2),
-                "time_savings_pct": round((1 - t_relay / max(t_traditional, 0.001)) * 100, 2),
-                "speedup_x": round(t_traditional / max(t_relay, 0.001), 2),
-                "tokens_saved": traditional_tokens.get('total_tokens', prompt_words * 7) - relay_total_tokens
-            }
-        })
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body.encode())
-
-        # Clean up
-        del traditional_tokens, relay_tokens, relay_total_tokens, relay_resp_text, body
-        gc.collect()
-
     def _handle_prompt_benchmark_stream(self):
         """Handle prompt-based benchmark with progressive SSE streaming."""
         length = int(self.headers.get('Content-Length', 0))
@@ -748,6 +616,139 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
+    def _handle_prompt_benchmark(self):
+        """Handle prompt-based benchmark: compare traditional LLM vs TokenRelay."""
+        length = int(self.headers.get('Content-Length', 0))
+        data = json.loads(self.rfile.read(length).decode()) if length > 0 else {}
+        prompt = data.get('prompt', 'What is the capital of France?')
+
+        # Read OpenRouter API key
+        api_key = os.environ.get('HERMES_CUSTOM_LOCALHOST_20128_API_KEY', '')
+        if not api_key:
+            for env_path in ['/home/columbo/ExtData/AIAT/.env', '/home/columbo/ExtData/.hermes/.env']:
+                try:
+                    with open(env_path) as f:
+                        for line in f:
+                            if line.startswith('OPENROUTER_API_KEY='):
+                                api_key = line.strip().split('=', 1)[1]
+                                break
+                except:
+                    pass
+
+        # === Traditional LLM: full prompt (no caching) ===
+        t0 = time.perf_counter()
+        prompt_words = 0
+        try:
+            traditional_tokens = self._call_llm(prompt, api_key, 'http://localhost:20128/v1/chat/completions')
+            t_traditional = time.perf_counter() - t0
+        except Exception as e:
+            prompt_words = len(prompt.split())
+            traditional_tokens = {'prompt_tokens': prompt_words * 3, 'completion_tokens': prompt_words * 4, 'total_tokens': prompt_words * 7, 'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
+            t_traditional = 2.0
+
+        # === TokenRelay: full v3 pipeline with EdgeCache ===
+        relay_pipeline_info = {}
+        t_relay = 0.0
+        try:
+            pipeline_info = self._relay_pipeline(prompt)
+            compressed = pipeline_info.get('compressed_text', prompt)
+            
+            # EdgeCache lookup
+            cache = self._get_cache()
+            cache_key = f"benchmark:{hashlib.md5(prompt.encode()).hexdigest()}"
+            cached = cache.get(cache_key)
+            if cached is not None:
+                relay_pipeline_info = {
+                    'intent': pipeline_info.get('intent', 'unknown'),
+                    'confidence': round(pipeline_info.get('confidence', 0.0), 2),
+                    'compressed_text': compressed,
+                    'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
+                    'tokens_saved': pipeline_info.get('tokens_saved', 0),
+                    'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
+                    'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
+                    'cache_hit': True,
+                    'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
+                    'stream_chunks': pipeline_info.get('stream_chunks', 0),
+                    'subagents_used': pipeline_info.get('subagents_used', 0),
+                    'subagent_names': pipeline_info.get('subagent_names', []),
+                }
+                relay_tokens = cached
+            else:
+                relay_pipeline_info = {
+                    'intent': pipeline_info.get('intent', 'unknown'),
+                    'confidence': round(pipeline_info.get('confidence', 0.0), 2),
+                    'compressed_text': compressed,
+                    'compression_ratio': round(pipeline_info.get('compression_ratio', 0.0), 2),
+                    'tokens_saved': pipeline_info.get('tokens_saved', 0),
+                    'v3_steps': pipeline_info.get('v3_pipeline_steps', []),
+                    'token_savings_pct': round(pipeline_info.get('token_savings_pct', 0.0), 2),
+                    'cache_hit': False,
+                    'qos_tier': pipeline_info.get('qos_tier', 'unknown'),
+                    'stream_chunks': pipeline_info.get('stream_chunks', 0),
+                    'subagents_used': pipeline_info.get('subagents_used', 0),
+                    'subagent_names': pipeline_info.get('subagent_names', []),
+                }
+                t1 = time.perf_counter()
+                relay_tokens = self._call_llm(compressed, api_key, 'http://localhost:20128/v1/chat/completions')
+                t_relay = time.perf_counter() - t1
+                self._cache_put_safe(cache, cache_key, relay_tokens, ttl=3600)
+        except Exception as e:
+            compressed = prompt
+            relay_pipeline_info = {'error': str(e), 'subagents_used': 0, 'subagent_names': []}
+            relay_tokens = {'prompt_tokens': max(len(compressed.split()) * 3, 3),
+                           'completion_tokens': max(len(compressed.split()) * 4, 2),
+                           'total_tokens': max(len(compressed.split()) * 7, 5),
+                           'response_text': f'[ERROR: {type(e).__name__}: {e}]'}
+            t_relay = 0.001
+
+        # Clean up large objects
+        del compressed
+        gc.collect()
+
+        prompt_words = len(prompt.split())
+        relay_total_tokens = relay_tokens.get('total_tokens', 0)
+        relay_resp_text = relay_tokens.get('response_text', '')
+
+        body = json.dumps({
+            "status": "success",
+            "result": "prompt_benchmark_complete",
+            "pipeline": "v3 (ATC→CAR→BRP→POS→TEQ→EPC)",
+            "prompt": prompt[:200],
+            "prompt_length_chars": len(prompt),
+            "relay_pipeline": relay_pipeline_info,
+            "traditional": {
+                "prompt_tokens": traditional_tokens.get('prompt_tokens', prompt_words * 3),
+                "response_tokens": traditional_tokens.get('completion_tokens', prompt_words * 4),
+                "total_tokens": traditional_tokens.get('total_tokens', prompt_words * 7),
+                "execution_time_ms": round(t_traditional * 1000, 2),
+                "tokens_per_second": round(traditional_tokens.get('total_tokens', prompt_words * 7) / max(t_traditional, 0.001), 0),
+                "response_text": traditional_tokens.get('response_text', '')
+            },
+            "token_relay": {
+                "prompt_tokens": relay_tokens['prompt_tokens'],
+                "response_tokens": relay_tokens['completion_tokens'],
+                "total_tokens": relay_total_tokens,
+                "execution_time_ms": round(t_relay * 1000, 2),
+                "tokens_per_second": round(relay_total_tokens / max(t_relay, 0.001), 0),
+                "response_text": relay_resp_text
+            },
+            "comparison": {
+                "token_savings_pct": round((1 - relay_total_tokens / max(traditional_tokens.get('total_tokens', prompt_words * 7), 1)) * 100, 2),
+                "time_savings_pct": round((1 - t_relay / max(t_traditional, 0.001)) * 100, 2),
+                "speedup_x": round(t_traditional / max(t_relay, 0.001), 2),
+                "tokens_saved": traditional_tokens.get('total_tokens', prompt_words * 7) - relay_total_tokens
+            }
+        })
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+        # Clean up
+        del traditional_tokens, relay_tokens, relay_total_tokens, relay_resp_text, body
+        gc.collect()
+
+
     def do_POST(self):
         try:
             if self.path == '/api/prompt-benchmark-stream':
@@ -755,7 +756,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_prompt_benchmark_stream()
             elif self.path == '/api/prompt-benchmark':
                 self._app._increment_request()
-                self._app._handle_prompt_benchmark()
+                self._handle_prompt_benchmark()
             elif self.path == '/api/pipeline-details':
                 self._app._increment_request()
                 self._handle_pipeline_details()
